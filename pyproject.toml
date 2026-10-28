@@ -42,6 +42,7 @@ docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.27"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+faulthandler_timeout = 60
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/molecular_similarity_toolkit"]

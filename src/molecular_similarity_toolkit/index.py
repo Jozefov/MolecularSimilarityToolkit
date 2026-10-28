@@ -162,10 +162,10 @@ def stage_sources(
     expected_root = read_json(root / "build.json")["signature"]
     completed_path = root / "staging.json"
     if completed_path.exists():
-        completed = read_json(completed_path)
         try:
+            completed = read_json(completed_path)
             check_document(completed)
-        except ValueError:
+        except (ValueError, TypeError, OSError):
             completed = {"signature": expected_root, "required_units": []}
         if completed["signature"] != expected_root:
             raise ValueError("staging configuration changed")
@@ -570,7 +570,7 @@ def build_index(
     input bytes, chemistry, fingerprints or shard layout are refused.
 
     The one staging coordinator limits DuckDB memory and spills to ``scratch``.
-    Chemistry uses bounded query threads; shard writers execute sequentially.
+    Chemistry uses bounded process batches; shard writers execute sequentially.
     For distributed shard builds use :func:`plan_build`, ``run_task`` and
     ``merge``. Each HDF5 shard uses IDs in [1, 1,000,000], independently of the
     total corpus size. Source aliases retain duplicate IDs and memberships.

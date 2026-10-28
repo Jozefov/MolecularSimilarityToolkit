@@ -38,7 +38,8 @@ NumPy's mask-update timing reuses similarities computed during search; the
 report labels this and it must not be compared with a complete independent
 filter run. Direct FPSim2 scores are float32; its timing is a baseline, not the
 independent correctness oracle. Tests use exhaustive RDKit comparisons, and the
-benchmark checks package scores and rejection counts against packed NumPy.
+benchmark compares all query IDs, ordered match IDs, integer scores and rejected
+molecule-ID sets against packed NumPy and an independent direct-backend path.
 
 The synthetic test uses uniform random fingerprint bytes, not chemical
 structures. It exercises 10M rows through the actual FPSim2 adapter in bounded
@@ -54,8 +55,9 @@ only when you have deliberately arranged and documented that condition. For a
 controlled cold-cache measurement use an isolated host or fresh volume and
 record how you did it. Do not treat an uncontrolled run as a cold-cache result.
 
-Peak RSS is sampled per subprocess using the operating system's high-water
-mark. Total disk space and memory depend on provenance size, duplicates, query
+The parent OS high-water mark and sampled process-tree RSS are both recorded.
+Process-tree sampling includes preparation workers. Total disk space and memory
+depend on provenance size, duplicates, query
 counts, cutoff ties and native-library overhead. Shard sizes and worker limits
 bound resident working sets; they are not a hard process memory sandbox.
 
@@ -87,3 +89,11 @@ RDKit integer rescoring, while omitting the much slower NumPy baseline. The 100K
 and 1M ten-query runs still exercise all three implementations. Reports state
 which baselines ran. Raw FPSim2 kernel timings exclude exact boundary expansion
 and validation I/O; full package timings include them.
+
+The direct baseline uses **one native kernel worker**, matching the package's
+serial native kernels. The package can still process several queries at once.
+A preliminary four-shard direct benchmark with four internal FPSim2 workers
+segfaulted once; an identical diagnostic rerun passed. The underlying cause was
+not established. The supported package does not use that internal parallel path,
+and the benchmark now uses the same serial-kernel mode explicitly. This is
+recorded as a benchmark limitation, not silently counted as a passing run.

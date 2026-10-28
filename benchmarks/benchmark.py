@@ -43,6 +43,15 @@ def rss():
     return value / (1024**2 if sys.platform == "darwin" else 1024)
 
 
+def direct_top_k(engine, query, k):
+    """Match the package's serial native-kernel mode, outside its adapter."""
+    return engine.top_k(query, k=k, threshold=0.0, n_workers=1)
+
+
+def direct_threshold(engine, query, threshold):
+    return engine.similarity(query, threshold=threshold, n_workers=1)
+
+
 def _write_validation(out, phase, matches, rejected):
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -233,9 +242,7 @@ def stage(args):
                 for qid, qbytes in queries:
                     q = DataStructs.CreateFromBinaryText(qbytes)
                     initial, elapsed = timed(
-                        lambda q=q, engine=engine: engine.top_k(
-                            q, k=args.k, threshold=0.0, n_workers=args.workers
-                        )
+                        lambda q=q, engine=engine: direct_top_k(engine, q, args.k)
                     )
                     search_seconds += elapsed
                     boundary = max(
@@ -252,7 +259,7 @@ def stage(args):
                             )
                         ),
                     )
-                    candidates = engine.similarity(q, threshold=boundary)
+                    candidates = direct_threshold(engine, q, boundary)
                     local = []
                     for row in candidates:
                         i = int(row["mol_id"]) - 1
@@ -263,12 +270,10 @@ def stage(args):
                     local.sort(key=lambda r: (-Fraction(r[1], r[2]), r[0]))
                     matches[qid].extend(local[: args.k])
                     hits, elapsed = timed(
-                        lambda q=q, engine=engine: engine.similarity(
+                        lambda q=q, engine=engine: direct_threshold(
+                            engine,
                             q,
-                            threshold=float(
-                                np.nextafter(np.float32(0.8), np.float32(-np.inf))
-                            ),
-                            n_workers=args.workers,
+                            float(np.nextafter(np.float32(0.8), np.float32(-np.inf))),
                         )
                     )
                     filter_seconds += elapsed
@@ -313,7 +318,7 @@ def stage(args):
             rejected_count=len(rejected),
         )
         timings["timing_note"] = (
-            "Native initial top-k/threshold kernels only; exact boundary expansion, identity/count verification and output are outside kernel timings."
+            "Serial native initial top-k/threshold kernels only (n_workers=1, matching package kernels); exact boundary expansion, identity/count verification and output are outside kernel timings."
             if args.phase == "direct"
             else "Historical per-query NumPy byte-popcount scan; filter mask reuses computed similarities. Stable identity ties included in search time."
         )
@@ -372,6 +377,8 @@ def real(args):
             )
         },
         "workers": args.workers,
+        "direct_kernel_workers": 1,
+        "benchmark_sha256": checksum(Path(__file__)),
         "memory_gb": args.memory_gb,
         "cache_condition": args.cache_condition,
         "cache_note": "OS page cache was not flushed. Build precedes search; comparisons run in the recorded order.",
@@ -545,6 +552,7 @@ def synthetic(args):
         "oracle_agreement": True,
         "global_topk_scores": sorted(best, reverse=True)[: args.k],
         "hardware": platform.platform(),
+        "benchmark_sha256": checksum(Path(__file__)),
         "cache_condition": "uncontrolled; freshly written shards",
         "scope": "FPSim2 adapter, bounded shard storage and exact rescoring; chemistry, aliases and scheduling excluded",
     }

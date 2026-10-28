@@ -22,7 +22,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --group dev --extra docs
       - run: uv run ruff check .
-      - run: uv run pytest -q
+      - run: uv run pytest -v
       - run: uv run python examples/quickstart.py runs/python-example
       - name: CLI quickstart and integrity
         run: |

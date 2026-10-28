@@ -140,6 +140,48 @@ def test_completed_staging_does_not_reparse_input(tmp_path, monkeypatch):
     assert mst.build_index(source(), index.path).size == 2
 
 
+def test_damaged_staging_marker_reuses_valid_chemistry_chunks(tmp_path, monkeypatch):
+    index = mst.build_index(source(), tmp_path / "index")
+    (index.path / "staging.json").write_text('{"incomplete":')
+
+    def no_chemistry(*a, **kw):
+        raise AssertionError("valid chemistry chunk recomputed")
+
+    monkeypatch.setattr(index_module, "_normalize_batch", no_chemistry)
+    assert mst.build_index(source(), index.path).size == 2
+    assert mst.verify(index.path)["ok"]
+
+
+def test_direct_benchmark_and_adapter_always_use_serial_native_kernels():
+    import importlib.util
+
+    import numpy as np
+
+    from molecular_similarity_toolkit.adapter import ShardEngine
+
+    path = Path(__file__).parents[1] / "benchmarks/benchmark.py"
+    spec = importlib.util.spec_from_file_location("mst_benchmark", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Native:
+        def top_k(self, *a, **kw):
+            assert kw["n_workers"] == 1
+            return np.array([(1, 1.0)], dtype=[("mol_id", "u4"), ("coeff", "f4")])
+
+        def similarity(self, *a, **kw):
+            assert kw["n_workers"] == 1
+            return np.array([(1, 1.0)], dtype=[("mol_id", "u4"), ("coeff", "f4")])
+
+    native = Native()
+    module.direct_top_k(native, None, 20)
+    module.direct_threshold(native, None, 0.8)
+    engine = ShardEngine.__new__(ShardEngine)
+    engine.engine = native
+    assert list(engine.top_k_candidates(b"\x01" * 8, 20)) == [1]
+    assert list(engine.threshold_candidates(b"\x01" * 8, 0.8)) == [1]
+
+
 def test_pipeline_versions_invalidate_legacy_and_operation_caches(
     tmp_path, monkeypatch
 ):
