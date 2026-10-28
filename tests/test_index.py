@@ -1,13 +1,19 @@
-import json
 import pytest
-import molecular_similarity_toolkit as mst
-from molecular_similarity_toolkit.index import build_index, MoleculeIndex
+
 from molecular_similarity_toolkit.config import Source
+from molecular_similarity_toolkit.index import build_index
 from molecular_similarity_toolkit.storage import batches
 
 
 def test_build_resume_aliases(tmp_path):
-    source = Source.from_records([{"id":"same", "smiles":"CCO", "x":3}, {"id":"same", "smiles":"OCC", "x":4}, {"smiles":"bad"}], metadata_columns=("x",))
+    source = Source.from_records(
+        [
+            {"id": "same", "smiles": "CCO", "x": 3},
+            {"id": "same", "smiles": "OCC", "x": 4},
+            {"smiles": "bad"},
+        ],
+        metadata_columns=("x",),
+    )
     index = build_index(source, tmp_path / "index", shard_size=1, chunk_size=1)
     assert index.size == 1
     assert index.manifest["alias_count"] == 2
@@ -18,7 +24,12 @@ def test_build_resume_aliases(tmp_path):
     build_index(source, index.path, shard_size=1, chunk_size=1)
     assert shard.stat().st_mtime_ns == stamp
     with pytest.raises(ValueError, match="resume refused"):
-        build_index(Source.from_records([{"smiles":"CC"}]), index.path, shard_size=1, chunk_size=1)
+        build_index(
+            Source.from_records([{"smiles": "CC"}]),
+            index.path,
+            shard_size=1,
+            chunk_size=1,
+        )
 
 
 def test_empty(tmp_path):
@@ -28,7 +39,7 @@ def test_empty(tmp_path):
 
 
 def test_interruption(tmp_path, monkeypatch):
-    source = Source.from_records([{"smiles":"CCO"}, {"smiles":"CCC"}])
+    source = Source.from_records([{"smiles": "CCO"}, {"smiles": "CCC"}])
     monkeypatch.setenv("MST_FAILPOINT", "stage-0000-00000000:after_publish")
     with pytest.raises(RuntimeError, match="interruption"):
         build_index(source, tmp_path / "index", chunk_size=1, shard_size=1)

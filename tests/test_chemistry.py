@@ -1,6 +1,11 @@
 import pytest
-from molecular_similarity_toolkit.config import ChemistryConfig, FingerprintConfig, Source
-from molecular_similarity_toolkit.chemistry import prepare, intersection_union
+
+from molecular_similarity_toolkit.chemistry import intersection_union, prepare
+from molecular_similarity_toolkit.config import (
+    ChemistryConfig,
+    FingerprintConfig,
+    Source,
+)
 
 
 def canonical(s, **options):
@@ -15,8 +20,12 @@ def test_default_identity_policy():
     assert canonical("CC(=O)C") != canonical("CC(O)=C")
     assert canonical("[13CH3]CO", remove_isotopes=True) == canonical("CCO")
     assert canonical("CC(=O)[O-].[Na+]", normalized_parent=True) == canonical("CC(=O)O")
-    assert canonical("CC(O)=C", canonical_tautomer=True) == canonical("CC(=O)C", canonical_tautomer=True)
-    assert canonical("C[C@H](O)F", remove_stereochemistry=False) != canonical("C[C@@H](O)F", remove_stereochemistry=False)
+    assert canonical("CC(O)=C", canonical_tautomer=True) == canonical(
+        "CC(=O)C", canonical_tautomer=True
+    )
+    assert canonical("C[C@H](O)F", remove_stereochemistry=False) != canonical(
+        "C[C@@H](O)F", remove_stereochemistry=False
+    )
 
 
 def test_validation():

@@ -1,10 +1,13 @@
 """Atomic publications and checksummed receipts shared by local and batch work."""
+
+import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import tempfile
+from pathlib import Path
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -18,13 +21,17 @@ def digest(path: str | Path) -> str:
 
 
 def signature(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def atomic_json(path: Path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True, default=str) + "\n")
+    temporary.write_text(
+        json.dumps(value, indent=2, sort_keys=True, default=str) + "\n"
+    )
     os.replace(temporary, path)
 
 
@@ -44,12 +51,20 @@ def receipt_valid(root: Path, unit: str, expected: str) -> bool:
         return False
     try:
         value = read_json(receipt)
-        return value["signature"] == expected and all((root / item["path"]).is_file() and digest(root / item["path"]) == item["sha256"] for item in value["files"])
+        return (
+            value["signature"] == expected
+            and bool(value["files"])
+            and all(
+                (root / item["path"]).is_file()
+                and digest(root / item["path"]) == item["sha256"]
+                for item in value["files"]
+            )
+        )
     except (ValueError, KeyError, OSError):
         return False
 
 
-def publish_unit(root: Path, unit: str, expected: str, make):
+def _publish_locked(root: Path, unit: str, expected: str, make):
     """Publish a unit directory then a receipt. Missing receipts safely rerun a unit."""
     if receipt_valid(root, unit, expected):
         return
@@ -63,11 +78,34 @@ def publish_unit(root: Path, unit: str, expected: str, make):
             shutil.rmtree(target)
         os.replace(temporary, target)
         failpoint(f"{unit}:after_publish")
-        files = [{"path": str(p.relative_to(root)), "sha256": digest(p)} for p in sorted(target.rglob("*")) if p.is_file()]
-        atomic_json(root / "receipts" / f"{unit}.json", {"signature": expected, "files": files})
+        files = [
+            {"path": str(p.relative_to(root)), "sha256": digest(p)}
+            for p in sorted(target.rglob("*"))
+            if p.is_file()
+        ]
+        atomic_json(
+            root / "receipts" / f"{unit}.json", {"signature": expected, "files": files}
+        )
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
+
+
+def publish_unit(root: Path, unit: str, expected: str, make):
+    """Publish one immutable unit under a crash-released POSIX advisory lock."""
+    locks = root / ".locks"
+    locks.mkdir(parents=True, exist_ok=True)
+    with (locks / f"{unit}.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"unit {unit} is already running; retry after it completes"
+            ) from error
+        try:
+            return _publish_locked(root, unit, expected, make)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def write_rows(path: Path, rows: list[dict], schema: pa.Schema):
@@ -75,12 +113,15 @@ def write_rows(path: Path, rows: list[dict], schema: pa.Schema):
 
 
 def batches(path: Path, batch_size=8192):
-    for batch in pq.ParquetFile(path).iter_batches(batch_size=batch_size):
+    for batch in pq.ParquetFile(path).iter_batches(
+        batch_size=batch_size, use_threads=False
+    ):
         yield from batch.to_pylist()
 
 
 def connect(memory_gb=4, scratch=None):
     import duckdb
+
     connection = duckdb.connect()
     connection.execute(f"SET memory_limit='{float(memory_gb)}GB'")
     connection.execute("SET threads=1")
