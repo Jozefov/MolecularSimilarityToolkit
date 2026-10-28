@@ -27,6 +27,7 @@ nav:
   - Cluster execution: hpc.md
   - Performance: performance.md
   - Release review: release.md
+  - Review fixes: review-fixes.md
 plugins:
   - search
   - mkdocstrings:

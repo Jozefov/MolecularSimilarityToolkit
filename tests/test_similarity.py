@@ -159,18 +159,68 @@ def test_k_larger_than_pool(tmp_path):
     )
 
 
-def test_exact_eighty_percent_boundary(tmp_path):
+@pytest.mark.parametrize("comparison", [">", ">="])
+@pytest.mark.parametrize(
+    "threshold", ["0.7999999999999999", "0.8", "0.8000000000000001"]
+)
+def test_exact_eighty_percent_boundary(tmp_path, comparison, threshold):
     short = "O=C(O)C(=O)CC(O)C(O)COP(=O)(O)O"
     long = "O=C(O)C(=O)CC(O)C(O)C(O)COP(=O)(O)O"
     pool = mst.build_index(
         mst.Source.from_records([{"smiles": short}]), tmp_path / "pool"
     )
     protected = mst.Source.from_records([{"smiles": long}])
-    strict = mst.filter_pool(pool, protected, "0.8", ">", tmp_path / "strict")
-    inclusive = mst.filter_pool(pool, protected, "0.8", ">=", tmp_path / "inclusive")
-    assert strict.summary["rejected_count"] == 0
-    hit = rows(inclusive, "rejected")[0]
-    assert (hit["intersection"], hit["union"]) == (24, 30)
+    result = mst.filter_pool(pool, protected, threshold, comparison, tmp_path / "run")
+    exact = Fraction(*rdkit_counts(short, long))
+    assert exact == Fraction(4, 5)
+    expected = (
+        exact > Fraction(threshold)
+        if comparison == ">"
+        else exact >= Fraction(threshold)
+    )
+    assert result.summary["rejected_count"] == int(expected)
+    if expected:
+        hit = rows(result, "rejected")[0]
+        assert (hit["intersection"], hit["union"]) == (24, 30)
+
+
+def test_stereo_aware_nondefault_multishard_search(tmp_path):
+    chemistry = mst.ChemistryConfig(remove_stereochemistry=False)
+    fingerprints = mst.FingerprintConfig(radius=3, n_bits=128, use_chirality=True)
+    index = mst.build_index(
+        mst.Source.from_records([{"smiles": s} for s in SMILES]),
+        tmp_path / "index",
+        chemistry=chemistry,
+        fingerprint=fingerprints,
+        shard_size=3,
+    )
+    result = mst.search(
+        index,
+        mst.Source.from_records([{"smiles": "C[C@H](O)F"}]),
+        99,
+        tmp_path / "search",
+        exclude_identity=True,
+        workers=3,
+    )
+    generator = rdFingerprintGenerator.GetMorganGenerator(
+        radius=3, fpSize=128, includeChirality=True
+    )
+    query = Chem.MolFromSmiles("C[C@H](O)F")
+    query_smiles = Chem.MolToSmiles(query)
+    query_fp = generator.GetFingerprint(query)
+    expected = []
+    for molecule in batches(index.molecules_path):
+        if molecule["canonical_smiles"] == query_smiles:
+            continue
+        fp = generator.GetFingerprint(Chem.MolFromSmiles(molecule["canonical_smiles"]))
+        score = Fraction((query_fp & fp).GetNumOnBits(), (query_fp | fp).GetNumOnBits())
+        assert float(score) == DataStructs.TanimotoSimilarity(query_fp, fp)
+        expected.append((score, molecule["molecule_id"]))
+    expected.sort(key=lambda r: (-r[0], r[1]))
+    assert [
+        (Fraction(r["intersection"], r["union"]), r["molecule_id"])
+        for r in rows(result)
+    ] == expected
 
 
 def test_ties_and_fingerprint_identity_distinction(tmp_path):
