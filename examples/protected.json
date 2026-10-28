@@ -1,0 +1,1 @@
+{"sources": [{"path": "benchmark.tsv", "name": "benchmark", "id_column": "id", "smiles_column": "smiles", "split_column": "fold", "splits": ["val", "test"]}]}

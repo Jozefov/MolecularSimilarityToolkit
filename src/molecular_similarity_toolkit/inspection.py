@@ -24,28 +24,38 @@ def status(path: str | Path) -> dict:
             "completed_tasks": 0,
             "total_tasks": None,
         }
-    plan = read_json(plan_path)
-    build = plan["kind"] == "build"
-    units = [
-        task["shard"] if build else f"task-{task['id']:08d}" for task in plan["tasks"]
-    ]
-    completed = sum((root / "receipts" / f"{unit}.json").exists() for unit in units)
-    published = (
-        (root / "manifest.json").exists()
-        if build
-        else (root / "receipts/merge.json").exists()
-    )
-    return {
-        "path": str(root),
-        "kind": plan["kind"],
-        "state": "complete"
-        if published and completed == len(units)
-        else "ready"
-        if completed == len(units)
-        else "incomplete",
-        "completed_tasks": completed,
-        "total_tasks": len(units),
-    }
+    try:
+        plan = read_json(plan_path)
+        build = plan["kind"] == "build"
+        units = [
+            task["shard"] if build else f"task-{task['id']:08d}"
+            for task in plan["tasks"]
+        ]
+        completed = sum((root / "receipts" / f"{unit}.json").exists() for unit in units)
+        published = (
+            (root / "manifest.json").exists()
+            if build
+            else (root / "receipts/merge.json").exists()
+        )
+        return {
+            "path": str(root),
+            "kind": plan["kind"],
+            "state": "complete"
+            if published and completed == len(units)
+            else "ready"
+            if completed == len(units)
+            else "incomplete",
+            "completed_tasks": completed,
+            "total_tasks": len(units),
+        }
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        return {
+            "path": str(root),
+            "state": "corrupt",
+            "completed_tasks": None,
+            "total_tasks": None,
+            "error": str(error),
+        }
 
 
 def verify(path: str | Path) -> dict:
@@ -65,7 +75,7 @@ def verify(path: str | Path) -> dict:
             expected = read_json(receipt)["signature"]
             if not receipt_valid(root, receipt.stem, expected):
                 failures.append(receipt.stem)
-        except (ValueError, KeyError, OSError):
+        except (ValueError, KeyError, TypeError, OSError):
             failures.append(receipt.stem)
     try:
         if (root / "plan.json").exists():
@@ -101,7 +111,7 @@ def verify(path: str | Path) -> dict:
                 failures.append("manifest")
         else:
             failures.append("plan")
-    except (ValueError, KeyError, OSError) as error:
+    except (ValueError, KeyError, TypeError, OSError) as error:
         failures.append(f"plan: {error}")
     return {
         "ok": not failures,

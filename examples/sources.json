@@ -1,0 +1,1 @@
+{"sources": [{"path": "pool.tsv", "name": "demo", "id_column": "id", "smiles_column": "smiles", "metadata_columns": ["origin"]}]}

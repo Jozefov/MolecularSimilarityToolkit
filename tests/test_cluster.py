@@ -158,3 +158,26 @@ def test_execute_build_and_result_exports(tmp_path):
         result.export(tmp_path / "matches.xlsx")
     with pytest.raises(ValueError, match="delimiter"):
         result.export(tmp_path / "matches.csv", delimiter="two")
+
+
+def test_malformed_plans_and_partial_receipts(tmp_path):
+    from molecular_similarity_toolkit.storage import receipt_valid
+
+    index = mst.build_index(source(), tmp_path / "index", chunk_size=1)
+    receipt = index.path / "receipts/shard-00000000.json"
+    original = read_json(receipt)
+    expected = original["signature"]
+    for records in [
+        [],
+        original["files"][:1],
+        original["files"] + original["files"][:1],
+        [{**original["files"][0], "sha256": "bad"}],
+    ]:
+        atomic_json(receipt, {**original, "files": records})
+        assert not receipt_valid(index.path, "shard-00000000", expected)
+    atomic_json(receipt, original)
+    assert receipt_valid(index.path, "shard-00000000", expected)
+    plan = mst.plan_search(index, source(), 1, tmp_path / "search")
+    plan.write_text("{truncated")
+    assert mst.status(plan)["state"] == "corrupt"
+    assert not mst.verify(plan)["ok"]

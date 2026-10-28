@@ -51,16 +51,31 @@ def receipt_valid(root: Path, unit: str, expected: str) -> bool:
         return False
     try:
         value = read_json(receipt)
-        return (
-            value["signature"] == expected
-            and bool(value["files"])
-            and all(
-                (root / item["path"]).is_file()
-                and digest(root / item["path"]) == item["sha256"]
-                for item in value["files"]
-            )
-        )
-    except (ValueError, KeyError, OSError):
+        files = value["files"]
+        if value["signature"] != expected or not isinstance(files, list) or not files:
+            return False
+        target = root / "units" / unit
+        actual = {
+            p.relative_to(root).as_posix() for p in target.rglob("*") if p.is_file()
+        }
+        recorded = [item["path"] for item in files]
+        if len(set(recorded)) != len(recorded) or set(recorded) != actual:
+            return False
+        for item in files:
+            path = root / item["path"]
+            checksum = item["sha256"]
+            if not path.resolve().is_relative_to(target.resolve()):
+                return False
+            if (
+                not isinstance(checksum, str)
+                or len(checksum) != 64
+                or any(c not in "0123456789abcdef" for c in checksum)
+            ):
+                return False
+            if digest(path) != checksum:
+                return False
+        return True
+    except (ValueError, KeyError, TypeError, OSError):
         return False
 
 

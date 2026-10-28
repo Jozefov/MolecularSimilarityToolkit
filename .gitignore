@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+site/
+.coverage
+htmlcov/
+.DS_Store
+work/
+indexes/
+runs/
+benchmarks/data/
+benchmarks/runs/

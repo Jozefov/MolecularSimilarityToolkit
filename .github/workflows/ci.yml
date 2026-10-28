@@ -1,0 +1,48 @@
+name: verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        python: ['3.11', '3.12', '3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked --group dev --extra docs
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+      - run: uv run python examples/quickstart.py runs/python-example
+      - name: CLI quickstart and integrity
+        run: |
+          uv run mol-sim build examples/sources.json indexes/cli-pool --shard-size 3
+          uv run mol-sim build examples/protected.json indexes/cli-protected
+          uv run mol-sim search indexes/cli-pool examples/queries.tsv runs/cli-search --k 3
+          uv run mol-sim filter indexes/cli-pool indexes/cli-protected runs/cli-filter
+          uv run mol-sim verify runs/cli-search
+          uv run mol-sim verify runs/cli-filter
+      - run: uv run mkdocs build --strict
+      - run: uv build
+      - name: Install the built wheel in a clean environment
+        run: |
+          uv venv work/wheel-check --python ${{ matrix.python }}
+          uv pip install --python work/wheel-check/bin/python dist/*.whl
+          work/wheel-check/bin/python examples/quickstart.py runs/wheel-example
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-24.04' && matrix.python == '3.12'
+        with:
+          name: private-release-candidate
+          path: |
+            dist/
+            site/

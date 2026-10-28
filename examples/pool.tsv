@@ -1,0 +1,8 @@
+id	smiles	origin
+ethanol	CCO	demo
+propanol	CCCO	demo
+butanol	CCCCO	demo
+benzene	c1ccccc1	demo
+acetate	CC(=O)[O-]	demo
+acetic-acid	CC(=O)O	demo
+ethanol-alias	OCC	demo

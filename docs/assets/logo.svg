@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="196" viewBox="0 0 960 196" role="img" aria-labelledby="title desc">
+<title id="title">MolecularSimilarityToolkit</title><desc id="desc">A connected molecule beside three ranked bars.</desc><style>text{font-family:Arial,Helvetica,sans-serif;fill:#112b46}.muted{fill:#48627a}.teal{fill:#087e73}.blue{fill:#2161ad}.amber{fill:#9a5600}</style>
+<rect width="960" height="196" rx="24" fill="#f6f9fc"/>
+<g stroke="#087e73" stroke-width="7" stroke-linecap="round"><path d="M45 98 73 50 128 50 155 98 128 146 73 146Z" fill="none"/><path d="M155 98H192"/></g>
+<g fill="#087e73"><circle cx="45" cy="98" r="10"/><circle cx="73" cy="50" r="10"/><circle cx="128" cy="50" r="10"/><circle cx="155" cy="98" r="10"/><circle cx="128" cy="146" r="10"/><circle cx="73" cy="146" r="10"/></g>
+<g fill="#2161ad"><rect x="180" y="61" width="67" height="17" rx="5"/><rect x="180" y="90" width="49" height="17" rx="5"/><rect x="180" y="119" width="31" height="17" rx="5"/></g>
+<text x="278" y="88" font-size="35" font-weight="700">MolecularSimilarityToolkit</text>
+<text x="280" y="128" font-size="22" class="muted">Find close matches. Build protected training pools.</text></svg>

@@ -1,0 +1,4 @@
+id	smiles	fold
+training-ethanol	CCO	train
+validation-benzene	c1ccccc1	val
+test-acetate	CC(=O)[O-]	test

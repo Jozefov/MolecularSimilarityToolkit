@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 from .adapter import ShardEngine
 from .chemistry import intersection_union
 from .config import Source
-from .index import MoleculeIndex, build_index, merge_build, run_build_task
+from .index import MoleculeIndex, _build_plan, build_index, merge_build, run_build_task
 from .resources import effective_workers
 from .results import Result
 from .storage import (
@@ -326,16 +326,21 @@ def _best(rows, k):
 
 
 def run_task(
-    plan_path: str | Path, task_id: int, *, workers: int | None = None, _resident=None
-):
+    plan_path: str | Path,
+    task_id: int,
+    *,
+    workers: int | None = None,
+    _resident=None,
+    _context=None,
+) -> Path:
     """Execute one idempotent scheduler-independent task and publish its receipt.
 
     No shared HDF5 or database is written by workers. All inner FPSim2 kernels
     are serial; a read-only shard engine is shared across outer query threads.
     """
-    if read_json(Path(plan_path))["kind"] == "build":
+    if _context is None and read_json(Path(plan_path))["kind"] == "build":
         return run_build_task(plan_path, task_id)
-    root, plan, reference = _load_plan(plan_path)
+    root, plan, reference = _context or _load_plan(plan_path)
     if task_id < 0 or task_id >= len(plan["tasks"]):
         raise ValueError("task_id outside plan")
     task = plan["tasks"][task_id]
@@ -629,17 +634,21 @@ def execute(
     units are reused. ``memory_gb`` in the plan is measured in GiB.
     """
     if read_json(Path(plan_path))["kind"] == "build":
-        for task in read_json(Path(plan_path))["tasks"]:
-            run_build_task(plan_path, task["id"])
+        context = _build_plan(plan_path)
+        for task in context[1]["tasks"]:
+            run_build_task(plan_path, task["id"], _context=context)
         return merge_build(plan_path)
-    _root, plan, _ = _load_plan(plan_path)
+    context = _load_plan(plan_path)
+    _root, plan, _ = context
     resident = {}
     shard_id = None
     for task in sorted(plan["tasks"], key=lambda task: (task["shard"], task["id"])):
         if task["shard"] != shard_id:
             resident.clear()
             shard_id = task["shard"]
-        run_task(plan_path, task["id"], workers=workers, _resident=resident)
+        run_task(
+            plan_path, task["id"], workers=workers, _resident=resident, _context=context
+        )
     resident.clear()
     return merge(plan_path)
 

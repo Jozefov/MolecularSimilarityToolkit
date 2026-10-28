@@ -446,8 +446,9 @@ def build_index(
         resume=resume,
         chunk_size=chunk_size,
     )
-    for task in read_json(path)["tasks"]:
-        run_build_task(path, task["id"])
+    context = _build_plan(path)
+    for task in context[1]["tasks"]:
+        run_build_task(path, task["id"], _context=context)
     return merge_build(path)
 
 
@@ -488,9 +489,9 @@ def _build_plan(plan_path):
     return path.parent, plan
 
 
-def run_build_task(plan_path: str | Path, task_id: int) -> Path:
+def run_build_task(plan_path: str | Path, task_id: int, *, _context=None) -> Path:
     """Execute one shard build from cached fingerprints and publish its receipt."""
-    root, plan = _build_plan(plan_path)
+    root, plan = _context or _build_plan(plan_path)
     if task_id < 0 or task_id >= len(plan["tasks"]):
         raise ValueError("task_id outside build plan")
     manifest = plan["manifest"]

@@ -1,0 +1,44 @@
+site_name: MolecularSimilarityToolkit
+site_description: Find close molecule matches and build protected training pools.
+repo_url: https://github.com/Jozefov/MolecularSimilarityToolkit
+site_dir: site
+theme:
+  name: material
+  logo: assets/logo.svg
+  palette:
+    - scheme: default
+      primary: teal
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: teal
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+nav:
+  - Start here: index.md
+  - Python API: api.md
+  - Inputs and outputs: data.md
+  - Chemistry: chemistry.md
+  - Restart and integrity: restart.md
+  - Cluster execution: hpc.md
+  - Performance: performance.md
+  - Release review: release.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
