@@ -4,14 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "molecular-similarity-toolkit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Exact, disk-backed molecular similarity search and leakage filtering"
-readme = "README.md"
+readme = "PACKAGE_README.md"
 classifiers = ["Development Status :: 4 - Beta", "Intended Audience :: Science/Research", "Programming Language :: Python :: 3.11", "Programming Language :: Python :: 3.12", "Programming Language :: Python :: 3.13", "Topic :: Scientific/Engineering :: Chemistry", "Operating System :: MacOS", "Operating System :: POSIX :: Linux"]
 
 requires-python = ">=3.11,<3.14"
 license = "MIT"
-dependencies = ["FPSim2==0.7.4", "rdkit>=2024.3", "numpy>=1.26", "pyarrow>=16", "duckdb>=1.1", "typer>=0.12"]
+dependencies = [
+    "FPSim2==0.7.4",
+ "rdkit>=2024.3",
+ "numpy>=1.26",
+ "pyarrow>=16",
+ "duckdb>=1.1",
+ "typer>=0.12",
+ "loky>=3.4,<4",
+]
 
 [project.urls]
 Homepage = "https://github.com/Jozefov/MolecularSimilarityToolkit"
@@ -21,7 +29,13 @@ Repository = "https://github.com/Jozefov/MolecularSimilarityToolkit"
 mol-sim = "molecular_similarity_toolkit.cli:app"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.8", "build>=1"]
+dev = [
+    "pytest>=8",
+ "ruff>=0.8",
+ "build>=1",
+ "psutil>=6",
+ "readme-renderer[md]>=44",
+]
 
 [project.optional-dependencies]
 docs = ["mkdocs-material>=9", "mkdocstrings[python]>=0.27"]

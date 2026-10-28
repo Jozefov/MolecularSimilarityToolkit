@@ -35,8 +35,8 @@ def test_build_plan_missing_and_retry(tmp_path):
     staged = index.path / "receipts/stage-0000-00000000.json"
     staged.unlink()
     assert not mst.verify(index.path)["ok"]
-    with pytest.raises(ValueError, match="incomplete"):
-        mst.MoleculeIndex.open(index.path)
+    # Preparation artifacts are not runtime dependencies; full verification still fails.
+    assert mst.MoleculeIndex.open(index.path).size == 3
 
 
 @pytest.mark.parametrize(
@@ -129,7 +129,7 @@ def test_incompatible_indexes_and_tampered_manifest(tmp_path):
     manifest = read_json(pool.path / "manifest.json")
     manifest["chemistry"]["remove_isotopes"] = True
     atomic_json(pool.path / "manifest.json", manifest)
-    with pytest.raises(ValueError, match="manifest configuration"):
+    with pytest.raises(ValueError, match="manifest changed"):
         mst.MoleculeIndex.open(pool.path)
 
 

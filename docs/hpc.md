@@ -79,3 +79,16 @@ a scientific correctness check. Keep the output and receipt directories.
 CPU limits honor scheduler variables where available. The package avoids nested
 worker pools and shares a resident shard among query threads. More CPUs do not
 guarantee proportional speedup; memory bandwidth and output I/O can dominate.
+
+## Work-unit input validation
+
+Version 0.2 prepares independent fingerprint partitions before array execution.
+A shard-build task validates its own partition, not the complete global catalog.
+Search tasks use small per-task specifications and separately checksummed query
+chunks. The coordinator plan and required-unit set are validated during merge
+and full verification, including runs with zero tasks.
+
+Task retries must use the original unchanged shared run path. Replanning while
+workers are running is unsupported. All nodes need the same scientific pipeline
+versions; legacy 0.1 indexes/runs require a rebuild. A compact runtime index can
+be exported before staging it to another shared project directory.

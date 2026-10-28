@@ -12,6 +12,7 @@ class ChemistryConfig:
 
     remove_stereochemistry: bool = True
     remove_isotopes: bool = False
+    remove_atom_maps: bool = True
     normalized_parent: bool = False
     canonical_tautomer: bool = False
 
@@ -61,7 +62,7 @@ class Source:
 
     path: str | Path | None = None
     name: str | None = None
-    id_column: str = "id"
+    id_column: str | None = None
     smiles_column: str = "smiles"
     split_column: str | None = None
     splits: tuple[str, ...] | None = None
@@ -71,10 +72,18 @@ class Source:
     def __post_init__(self):
         if (self.path is None) == (self._records is None):
             raise ValueError("provide either path or records")
+        if isinstance(self.splits, str) or isinstance(self.metadata_columns, str):
+            raise TypeError(
+                "splits and metadata_columns must be sequences, not strings"
+            )
+        if self.id_column is not None and not isinstance(self.id_column, str):
+            raise TypeError("id_column must be a column name or None")
         if self.splits is not None and self.split_column is None:
             raise ValueError("splits requires split_column")
         object.__setattr__(
-            self, "splits", None if self.splits is None else tuple(self.splits)
+            self,
+            "splits",
+            None if self.splits is None else tuple(str(value) for value in self.splits),
         )
         object.__setattr__(self, "metadata_columns", tuple(self.metadata_columns))
 

@@ -64,3 +64,46 @@ memory at the cost of more files and scheduling overhead.
 The configured budget is a planning bound, not a hard OS memory limit; Python,
 RDKit, Arrow and native libraries have overhead. Set scheduler memory above the
 measured peak for your workload. See [performance evidence](performance.md).
+
+## Completed staging, progress and compact indexes
+
+After staging completes, a checksummed completion manifest records the exact
+chunk set. An unchanged resume checks source bytes and chunk receipts, then
+reuses staging without reparsing source records. A damaged chunk is rebuilt;
+incomplete staging may still require replay, including for compressed inputs.
+`status()` reports staged chunks and selected rows while preparation is running.
+Input checksum verification still reads source bytes on a build resume.
+
+Preparation uses bounded **process** batches through Loky, with a persistent
+worker pool, to avoid RDKit's Python-thread limitation. It works from notebooks,
+stdin and ordinary scripts without a multiprocessing main guard. Small inputs
+run serially to avoid process startup overhead. The memory budget caps worker
+count as well as resident search shards; benchmark process-tree RSS includes
+preparation workers.
+
+Create a portable runtime index after verifying a build:
+
+```python
+compact = mst.export_index('indexes/pool', out='indexes/pool-compact')
+assert mst.verify(compact.path)['ok']
+```
+
+```bash
+mol-sim compact indexes/pool indexes/pool-compact
+```
+
+The new directory contains the catalog, aliases, invalid records, fingerprint
+shards, manifests and receipts. It needs no staging chunks, build inputs or
+original source files. The original build is preserved. Compact indexes support
+search, filter and verification; repair/resume uses the original build directory.
+Opening a full index checks runtime completeness; verifying a full build also
+checks retained preparation artifacts. Verifying a compact index checks its
+complete runtime dependency set.
+
+Search workers read a small sealed header and their own task specification,
+query chunk and pool shard. They do not read/checksum the complete query table.
+The coordinator validates all dependencies, including zero-task cases, before
+reduction. Source index dependencies use the same checks in merge and verify.
+Build workers read their own prepared partition rather than the global catalog.
+Do not edit or relocate run plans while workers are running; all workers need
+the recorded shared paths. Compact index directories may be moved independently.

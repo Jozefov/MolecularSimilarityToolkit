@@ -1,7 +1,7 @@
 """Exact, disk-backed molecular similarity and protected-set filtering."""
 
 from .config import ChemistryConfig, FingerprintConfig, Source
-from .index import MoleculeIndex, build_index, plan_build
+from .index import MoleculeIndex, build_index, export_index, plan_build
 from .inspection import status, verify
 from .operations import (
     execute,
@@ -13,16 +13,18 @@ from .operations import (
     search,
 )
 from .results import Result
+from .versions import __version__
 
-__version__ = "0.1.0"
 __all__ = [
     "ChemistryConfig",
     "FingerprintConfig",
     "MoleculeIndex",
     "Result",
     "Source",
+    "__version__",
     "build_index",
     "execute",
+    "export_index",
     "filter_pool",
     "merge",
     "plan_build",

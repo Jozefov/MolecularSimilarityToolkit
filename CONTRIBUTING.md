@@ -1,7 +1,7 @@
 # Contributing
 
 Use Python 3.11–3.13. Install the locked development environment with
-`uv sync --locked --group dev`, then run `uv run ruff check .`,
+`uv sync --locked --group dev --extra docs`, then run `uv run ruff check .`,
 `uv run pytest`, and `uv run mkdocs build --strict`.
 
 Keep changes focused. New search or filtering behavior needs an independent

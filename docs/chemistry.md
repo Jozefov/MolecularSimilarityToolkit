@@ -76,3 +76,21 @@ with source-row provenance and a reason. Invalid protected molecules fail the
 job by default. `invalid_protected='quarantine'` is an explicit opt-out; if you
 use it, protection only covers the remaining valid reference molecules. An
 empty protected set is always an error.
+
+## Version 0.2 preparation order and atom maps
+
+Ignored isotope labels, atom maps and stereochemistry are removed **before**
+parent selection or tautomer canonicalization can depend on them. Optional parent
+normalization then runs cleanup, fragment selection and uncharging; optional
+tautomer canonicalization follows. The final structure is sanitized and made
+canonical before its fingerprint is computed.
+
+Atom-map numbers are annotations, so `remove_atom_maps=True` is the default.
+Mapped and unmapped copies therefore deduplicate and identity exclusion treats
+them as one structure. Set `ChemistryConfig(remove_atom_maps=False)` when map
+labels are deliberately part of your identity policy.
+
+Version 0.1 indexes and runs must be rebuilt in **new directories**. Format,
+preparation and operation implementation versions are stored independently of
+the package's release number. Comparisons reject incompatible preparation
+semantics even if RDKit and the visible chemistry options are the same.

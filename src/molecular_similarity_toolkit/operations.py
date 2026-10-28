@@ -19,15 +19,19 @@ from .results import Result
 from .storage import (
     atomic_json,
     batches,
+    check_document,
+    check_units,
     connect,
     failpoint,
     publish_unit,
     read_json,
     receipt_valid,
+    seal,
     signature,
     sql_path,
     write_rows,
 )
+from .versions import OPERATION_VERSION, PREPARATION_VERSION
 
 MATCH_SCHEMA = pa.schema(
     [
@@ -79,7 +83,7 @@ def _index(value, root: Path, reference: MoleculeIndex, workers, memory_gb, scra
         )
     if not receipt_valid(result.path, "catalog", result.manifest["signature"]):
         raise ValueError("query/protected catalog is corrupt; resume its build")
-    for key in ("chemistry", "fingerprint", "rdkit_version"):
+    for key in ("chemistry", "fingerprint", "rdkit_version", "preparation_version"):
         if result.manifest[key] != reference.manifest[key]:
             raise ValueError(f"incompatible indexes: {key}")
     return result
@@ -119,6 +123,8 @@ def plan_search(
     )
     descriptor = {
         "kind": "search",
+        "operation_version": OPERATION_VERSION,
+        "preparation_version": PREPARATION_VERSION,
         "index": str(reference.path),
         "index_signature": reference.manifest["signature"],
         "queries": str(query_index.path),
@@ -169,6 +175,8 @@ def plan_filter(
         )
     descriptor = {
         "kind": "filter",
+        "operation_version": OPERATION_VERSION,
+        "preparation_version": PREPARATION_VERSION,
         "index": str(reference.path),
         "index_signature": reference.manifest["signature"],
         "queries": str(protected_index.path),
@@ -250,6 +258,7 @@ def _plan(root, descriptor, reference, query_index, workers, memory_gb, scratch)
         ]
     plan = {
         **descriptor,
+        "descriptor": descriptor,
         "signature": expected,
         "tasks": tasks,
         "tasks_signature": signature(tasks),
@@ -258,35 +267,51 @@ def _plan(root, descriptor, reference, query_index, workers, memory_gb, scratch)
         "memory_gb": memory_gb,
         "scratch": str(scratch or root / "scratch"),
     }
-    atomic_json(path, plan)
+    plan["required_units"] = _required_units(plan)
+    for task in tasks:
+        atomic_json(
+            root / "task-specs" / f"{task['id']:08d}.json",
+            seal({"plan_signature": expected, "task": task}),
+        )
+    atomic_json(path, seal(plan))
+    atomic_json(root / "worker-plan.json", _worker_header(plan, path))
     return path
 
 
-def _load_plan(plan_path):
-    path = Path(plan_path).resolve()
-    plan = read_json(path)
-    descriptor = {
-        key: value
-        for key, value in plan.items()
-        if key
-        not in {
-            "signature",
-            "tasks",
-            "tasks_signature",
-            "query_count",
-            "workers",
-            "memory_gb",
-            "scratch",
+def _worker_header(plan, path):
+    keys = [
+        *plan["descriptor"],
+        "descriptor",
+        "signature",
+        "query_count",
+        "workers",
+        "memory_gb",
+        "scratch",
+    ]
+    stamp = Path(path).stat()
+    return seal(
+        {
+            **{key: plan[key] for key in keys},
+            "task_count": len(plan["tasks"]),
+            "plan_stamp": [stamp.st_size, stamp.st_mtime_ns],
         }
-    }
-    if signature(descriptor) != plan["signature"]:
+    )
+
+
+def _validate_operation(plan):
+    check_document(plan)
+    descriptor = plan["descriptor"]
+    if (
+        descriptor.get("operation_version") != OPERATION_VERSION
+        or descriptor.get("preparation_version") != PREPARATION_VERSION
+    ):
+        raise ValueError("unsupported operation/preparation version; create a new run")
+    if signature(descriptor) != plan["signature"] or any(
+        plan.get(key) != value for key, value in descriptor.items()
+    ):
         raise ValueError(
             "plan signature does not match immutable operation configuration"
         )
-    if signature(plan["tasks"]) != plan["tasks_signature"]:
-        raise ValueError("task manifest changed")
-    if [task["id"] for task in plan["tasks"]] != list(range(len(plan["tasks"]))):
-        raise ValueError("duplicated or invalid task IDs")
     reference = MoleculeIndex.open(plan["index"])
     queries = MoleculeIndex.open(plan["queries"])
     if (
@@ -294,10 +319,107 @@ def _load_plan(plan_path):
         or queries.manifest["signature"] != plan["query_signature"]
     ):
         raise ValueError("plan index signatures changed")
-    for key in ("chemistry", "fingerprint", "rdkit_version"):
+    for key in ("chemistry", "fingerprint", "rdkit_version", "preparation_version"):
         if reference.manifest[key] != queries.manifest[key]:
             raise ValueError(f"incompatible plan indexes: {key}")
+    count = (
+        queries.manifest["alias_count"] if plan["kind"] == "search" else queries.size
+    )
+    if count != plan["query_count"]:
+        raise ValueError("prepared query count changed")
+    return reference
+
+
+def _expected_task(plan, task_id, reference):
+    shards = reference.manifest["shards"]
+    count = (
+        math.ceil(plan["query_count"] / plan["query_chunk_size"]) * len(shards)
+        if plan["kind"] == "search"
+        else len(shards)
+    )
+    if task_id < 0 or task_id >= count:
+        raise ValueError("task_id outside plan")
+    if plan["kind"] == "filter":
+        return {
+            "id": task_id,
+            "shard": shards[task_id]["id"],
+            "query_start": 0,
+            "query_count": plan["query_count"],
+        }
+    chunk, shard = divmod(task_id, len(shards))
+    unit = f"query-chunk-{chunk:08d}"
+    return {
+        "id": task_id,
+        "shard": shards[shard]["id"],
+        "query_chunk": unit,
+        "query_chunk_signature": signature([plan["signature"], unit]),
+        "query_start": 0,
+        "query_count": min(
+            plan["query_chunk_size"],
+            plan["query_count"] - chunk * plan["query_chunk_size"],
+        ),
+    }
+
+
+def _required_units(plan):
+    units = [{"id": "queries", "signature": plan["signature"]}]
+    if plan["kind"] == "search":
+        for chunk in range(math.ceil(plan["query_count"] / plan["query_chunk_size"])):
+            unit = f"query-chunk-{chunk:08d}"
+            units.append(
+                {"id": unit, "signature": signature([plan["signature"], unit])}
+            )
+    units.extend(
+        {"id": f"task-{task['id']:08d}", "signature": _task_signature(plan, task)}
+        for task in plan["tasks"]
+    )
+    units.append({"id": "merge", "signature": plan["signature"]})
+    return units
+
+
+def _load_plan(plan_path):
+    path = Path(plan_path).resolve()
+    plan = read_json(path)
+    reference = _validate_operation(plan)
+    if signature(plan["tasks"]) != plan["tasks_signature"]:
+        raise ValueError("task manifest changed")
+    if plan["tasks"] != [
+        _expected_task(plan, i, reference) for i in range(len(plan["tasks"]))
+    ]:
+        raise ValueError("duplicated or invalid task IDs")
+    expected_count = (
+        math.ceil(plan["query_count"] / plan["query_chunk_size"])
+        * len(reference.manifest["shards"])
+        if plan["kind"] == "search"
+        else len(reference.manifest["shards"])
+    )
+    if len(plan["tasks"]) != expected_count or plan[
+        "required_units"
+    ] != _required_units(plan):
+        raise ValueError("incomplete task/dependency manifest")
+    if read_json(path.parent / "worker-plan.json") != _worker_header(plan, path):
+        raise ValueError("worker manifest changed")
+    for task in plan["tasks"]:
+        expected = seal({"plan_signature": plan["signature"], "task": task})
+        if read_json(path.parent / "task-specs" / f"{task['id']:08d}.json") != expected:
+            raise ValueError("task specification changed or incomplete")
     return path.parent, plan, reference
+
+
+def _load_worker(plan_path, task_id):
+    root = Path(plan_path).resolve().parent
+    plan = read_json(root / "worker-plan.json")
+    reference = _validate_operation(plan)
+    stamp = Path(plan_path).stat()
+    if plan["plan_stamp"] != [stamp.st_size, stamp.st_mtime_ns]:
+        raise ValueError("coordinator plan changed; replan before executing workers")
+    task = _expected_task(plan, task_id, reference)
+    if task_id >= plan["task_count"]:
+        raise ValueError("task_id outside plan")
+    spec = read_json(root / "task-specs" / f"{task_id:08d}.json")
+    if spec != seal({"plan_signature": plan["signature"], "task": task}):
+        raise ValueError("task specification changed")
+    return root, plan, reference, task
 
 
 def _task_signature(plan, task):
@@ -354,18 +476,26 @@ def _run_task(
     No shared HDF5 or database is written by workers. All inner FPSim2 kernels
     are serial; a read-only shard engine is shared across outer query threads.
     """
-    if _context is None and read_json(Path(plan_path))["kind"] == "build":
-        return run_build_task(plan_path, task_id)
-    root, plan, reference = _context or _load_plan(plan_path)
-    if task_id < 0 or task_id >= len(plan["tasks"]):
-        raise ValueError("task_id outside plan")
-    task = plan["tasks"][task_id]
+    worker_file = Path(plan_path).resolve().parent / "worker-plan.json"
+    if _context is None and not worker_file.exists():
+        if read_json(Path(plan_path))["kind"] == "build":
+            return run_build_task(plan_path, task_id)
+        raise ValueError("incomplete operation worker manifest")
+    if _context is None:
+        root, plan, reference, task = _load_worker(plan_path, task_id)
+    else:
+        root, plan, reference = _context
+        if task_id < 0 or task_id >= len(plan["tasks"]):
+            raise ValueError("task_id outside plan")
+        task = plan["tasks"][task_id]
     unit = f"task-{task_id:08d}"
     expected = _task_signature(plan, task)
     shard_info = next(
         shard for shard in reference.manifest["shards"] if shard["id"] == task["shard"]
     )
-    if not receipt_valid(root, "queries", plan["signature"]):
+    if plan["kind"] == "filter" and not receipt_valid(
+        root, "queries", plan["signature"]
+    ):
         raise ValueError("staged queries are missing or corrupt")
     if task.get("query_chunk") and not receipt_valid(
         root, task["query_chunk"], task["query_chunk_signature"]
@@ -448,14 +578,21 @@ def _run_task(
                 directory / "matches.parquet", MATCH_SCHEMA, compression="zstd"
             ) as writer:
                 query_iterator = _queries(root, task)
+                pending = []
                 with ThreadPoolExecutor(max_workers=worker_count) as pool:
                     # Bounded submissions: Executor.map eagerly consumes inputs before Python 3.14.
                     while block := list(itertools.islice(query_iterator, worker_count)):
                         for rows in pool.map(query_one, block):
-                            if rows:
+                            pending.extend(rows)
+                            if len(pending) >= 8192:
                                 writer.write_table(
-                                    pa.Table.from_pylist(rows, schema=MATCH_SCHEMA)
+                                    pa.Table.from_pylist(pending, schema=MATCH_SCHEMA)
                                 )
+                                pending = []
+                if pending:
+                    writer.write_table(
+                        pa.Table.from_pylist(pending, schema=MATCH_SCHEMA)
+                    )
         else:
             threshold = Fraction(plan["threshold"])
             witnesses = {}
@@ -511,10 +648,9 @@ def merge(plan_path: str | Path) -> Result | MoleculeIndex:
     if read_json(Path(plan_path))["kind"] == "build":
         return merge_build(plan_path)
     root, plan, reference = _load_plan(plan_path)
-    query_index = MoleculeIndex.open(plan["queries"])
-    for value in (reference, query_index):
-        if not receipt_valid(value.path, "catalog", value.manifest["signature"]):
-            raise ValueError("index catalog is missing or corrupt; resume its build")
+    from .inspection import run_dependencies
+
+    run_dependencies(root, plan, reference, include_merge=False)
     expected_units = {f"task-{task['id']:08d}" for task in plan["tasks"]}
     existing_units = {path.stem for path in (root / "receipts").glob("task-*.json")}
     if existing_units - expected_units:
@@ -656,6 +792,7 @@ def execute(
         return merge_build(plan_path)
     context = _load_plan(plan_path)
     _root, plan, _ = context
+    check_units(_root, [u for u in plan["required_units"] if u["id"] == "queries"])
     resident = {}
     shard_id = None
     for task in sorted(plan["tasks"], key=lambda task: (task["shard"], task["id"])):

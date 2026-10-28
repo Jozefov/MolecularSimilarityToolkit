@@ -68,3 +68,22 @@ snapshot and hardware.
 
 Upstream: [FPSim2 search documentation](https://chembl.github.io/FPSim2/user_guide/similarity/)
 and [FPSim2 implementation](https://github.com/chembl/FPSim2).
+
+## Version 0.2 validation and larger query sets
+
+Each benchmark now compares the **complete query-ID set**, ordered matched
+molecule IDs and integer intersection/union counts. Filtering compares rejected
+molecule-ID sets, not only counts. Missing queries or swapped identities cannot
+pass the validation flags.
+
+Process-tree RSS is sampled every 50 ms and includes preparation subprocesses;
+the report also retains the parent process's OS high-water mark. Sampling may
+miss very short peaks, while summed process RSS may count shared pages in more
+than one process. Preparation CPU and wall times and worker PIDs are recorded.
+
+Use `--queries 1000 --shard-size 250000 --skip-numpy` for a larger, four-shard
+1M-molecule run. This validates every result against direct FPSim2 with independent
+RDKit integer rescoring, while omitting the much slower NumPy baseline. The 100K
+and 1M ten-query runs still exercise all three implementations. Reports state
+which baselines ran. Raw FPSim2 kernel timings exclude exact boundary expansion
+and validation I/O; full package timings include them.

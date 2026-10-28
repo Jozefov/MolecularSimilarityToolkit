@@ -6,12 +6,13 @@ from pathlib import Path
 import typer
 
 from .config import ChemistryConfig, FingerprintConfig, Source
-from .index import MoleculeIndex, build_index, plan_build
+from .index import MoleculeIndex, build_index, export_index, plan_build
 from .inspection import status as inspect_status
 from .inspection import verify as inspect_verify
 from .operations import filter_pool, plan_filter, plan_search, run_task
 from .operations import merge as merge_api
 from .operations import search as search_api
+from .results import Result
 
 app = typer.Typer(
     help="Exact molecular similarity with immutable local/HPC work units.",
@@ -258,6 +259,18 @@ def verify(path: Path):
     typer.echo(json.dumps(result, indent=2))
     if not result["ok"]:
         raise typer.Exit(1)
+
+
+@app.command("compact")
+def compact(index: Path, out: Path):
+    """Export a verified portable index without preparation/build artifacts."""
+    typer.echo(str(export_index(index, out).path))
+
+
+@app.command("export")
+def export_command(run: Path, out: Path, table: str | None = None):
+    """Stream a completed result table to CSV/TSV."""
+    typer.echo(str(Result.open(run).export(out, table=table)))
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ protected_source = mst.Source('benchmark.tsv', name='benchmark',
                               split_column='fold', splits=['val', 'test'])
 ```
 
-`Source` is a frozen dataclass. File readers stream data; `from_records` snapshots
+`Source` is a frozen dataclass. Default `id_column=None` detects an `id` field
+or generates row IDs; explicit column names must exist. File readers stream data; `from_records` snapshots
 small records in memory. `metadata_columns` selects extra fields to retain.
 Use `to_dict()` / `from_dict()` for JSON configuration. Invalid source mappings,
 unsupported formats, or non-unique source names raise `ValueError`.
@@ -181,3 +182,38 @@ controls query concurrency; memory and scratch settings come from the plan.
 It propagates task and integrity failures without marking the result complete.
 
 ::: molecular_similarity_toolkit.execute
+
+## Export a compact index
+
+```python
+compact = mst.export_index(pool, 'indexes/portable-pool')
+assert mst.verify(compact.path)['ok']
+```
+
+The destination must not exist. The function verifies runtime units, copies them
+in bounded streams and publishes the destination atomically. It preserves the
+original build and provenance. The returned `MoleculeIndex` can be moved without
+its staging files or original input files. It supports search/filter/verify;
+rebuilding requires the original build. Corrupt input units raise before export.
+
+::: molecular_similarity_toolkit.export_index
+
+## Reopen and export a completed run
+
+```python
+saved = mst.Result.open('runs/candidates')
+saved.export('candidates.tsv')
+```
+
+`Result.open()` verifies its published result-table receipt. Use `verify()` to
+include all tasks and source dependencies. From the command line:
+
+```bash
+mol-sim export runs/candidates candidates.tsv
+mol-sim export runs/clean rejected.tsv --table rejected
+```
+
+To read the full generated API locally, run `uv sync --locked --group dev --extra
+docs`, then `uv run mkdocs serve`. CI also builds the HTML reference into the
+private `private-release-candidate` artifact. Source Markdown on GitHub contains
+API-generation directives; the built HTML contains the expanded signatures.

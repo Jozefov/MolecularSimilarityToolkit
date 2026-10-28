@@ -8,7 +8,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .storage import read_json
+from .storage import check_document, read_json, receipt_valid
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,21 @@ class Result:
 
     path: Path
     kind: str
+
+    @classmethod
+    def open(cls, path: str | Path) -> "Result":
+        """Open a completed result, validating its published table receipt.
+
+        Use ``verify`` to include every task and external input dependency.
+        """
+        path = Path(path).resolve()
+        plan = read_json(path / "plan.json")
+        check_document(plan)
+        if plan["kind"] not in {"search", "filter"} or not receipt_valid(
+            path, "merge", plan["signature"]
+        ):
+            raise ValueError("result is incomplete or corrupt")
+        return cls(path, plan["kind"])
 
     @property
     def summary(self) -> dict:

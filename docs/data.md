@@ -95,3 +95,21 @@ hits.export('matches.csv')
 
 Parquet is the primary storage format. CSV/TSV export is explicit and streams
 batches. Avoid converting an entire PubChem-sized result to pandas at once.
+
+## Exact source identifiers and malformed records
+
+`Source(..., id_column=None)` is the default: use the `id` column when present,
+otherwise generate `row-N` identifiers. The dataset name and source-row number
+keep generated identifiers unambiguous across datasets. An explicit
+`id_column='cid'` requires that column to exist, including in header-only files;
+a misspelling raises an error. Blank/null values receive generated IDs.
+
+SDF property values are read as their original strings. Identifiers such as
+`00123` and metadata such as `1e5` are preserved exactly. With automatic IDs,
+the SDF record name is the fallback if no `id` property exists.
+
+Reader failures are quarantined before fold selection. A malformed SDF record
+whose fold cannot be determined remains invalid rather than being silently
+excluded. A missing fold value is also invalid when a fold selector is active.
+Protected-input jobs fail by default on these records. Explicit quarantine
+reports how many protected records were omitted; it weakens the guarantee.

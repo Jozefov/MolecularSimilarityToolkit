@@ -33,6 +33,10 @@ jobs:
           uv run mol-sim verify runs/cli-search
           uv run mol-sim verify runs/cli-filter
       - run: uv run mkdocs build --strict
+      - name: Check package description rendering
+        run: |
+          uv run python scripts/build_package_readme.py
+          git diff --exit-code PACKAGE_README.md
       - run: uv build
       - name: Install the built wheel in a clean environment
         run: |

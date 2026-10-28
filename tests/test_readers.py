@@ -75,9 +75,9 @@ def test_zero_fp_and_overflow(tmp_path, monkeypatch):
             return DataStructs.ExplicitBitVect(2048)
 
     monkeypatch.setattr(
-        chemistry.rdFingerprintGenerator,
-        "GetMorganGenerator",
-        lambda **kwargs: Generator(),
+        chemistry,
+        "_generator",
+        lambda config: Generator(),
     )
     with pytest.raises(ValueError, match="zero-bit"):
         chemistry.prepare("CCO", mst.ChemistryConfig(), mst.FingerprintConfig())

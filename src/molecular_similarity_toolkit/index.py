@@ -1,15 +1,18 @@
 """Resumable streaming normalization, disk-backed deduplication and immutable shards."""
 
+import itertools
 import json
 import math
+import shutil
+import time
 from collections.abc import Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from loky import ProcessPoolExecutor
 
 from .adapter import write_shard
 from .chemistry import RDKIT_VERSION, prepare
@@ -19,14 +22,23 @@ from .resources import effective_workers
 from .storage import (
     atomic_json,
     batches,
+    check_document,
+    check_units,
     connect,
     digest,
     publish_unit,
     read_json,
     receipt_valid,
+    seal,
     signature,
     sql_path,
     write_rows,
+)
+from .versions import (
+    FORMAT_VERSION,
+    PREPARATION_VERSION,
+    __version__,
+    check_preparation,
 )
 
 STAGE_SCHEMA = pa.schema(
@@ -73,6 +85,68 @@ def source_descriptors(sources):
     return values
 
 
+def _normalize_batch(items, context):
+    import os
+    import time
+
+    started = time.process_time()
+    (
+        source_index,
+        name,
+        id_column,
+        smiles_column,
+        split_column,
+        metadata_columns,
+        chemistry,
+        fingerprint,
+    ) = context
+    normalized = []
+    for source_row, original in items:
+        original_id = original.get(id_column or "id")
+        row = {
+            "row_id": signature([source_index, source_row]),
+            "source": name,
+            "source_row": source_row,
+            "original_id": str(original_id)
+            if original_id not in (None, "")
+            else f"row-{source_row}",
+            "original_smiles": str(original.get(smiles_column))
+            if original.get(smiles_column) is not None
+            else "",
+            "split": None
+            if split_column is None
+            else str(original.get(split_column, "")),
+            "metadata": json.dumps(
+                {key: original.get(key) for key in metadata_columns},
+                sort_keys=True,
+                default=str,
+            ),
+        }
+        try:
+            if original.get("_reader_error"):
+                raise ValueError(original["_reader_error"])
+            canonical, mol_id, fp, count = prepare(
+                row["original_smiles"], chemistry, fingerprint
+            )
+            row.update(
+                canonical_smiles=canonical,
+                molecule_id=mol_id,
+                fingerprint=fp,
+                popcount=count,
+                error=None,
+            )
+        except (ValueError, RuntimeError, OverflowError) as error:
+            row.update(
+                canonical_smiles=None,
+                molecule_id=None,
+                fingerprint=None,
+                popcount=None,
+                error=str(error),
+            )
+        normalized.append(row)
+    return normalized, os.getpid(), time.process_time() - started
+
+
 def stage_sources(
     sources,
     root: Path,
@@ -83,93 +157,127 @@ def stage_sources(
     workers=4,
     memory_gb=4,
 ):
-    paths = []
-    for source_index, source in enumerate(sources):
-        name = source.name or (
-            Path(source.path).name if source.path else f"source-{source_index}"
-        )
-        pending = []
-        chunk = 0
-
-        def flush(items, number, source_index=source_index, name=name, source=source):
-            unit = f"stage-{source_index:04d}-{number:08d}"
-            expected = signature(
-                {"root": read_json(root / "build.json")["signature"], "unit": unit}
+    """Reuse completed staging without replay; otherwise use bounded process batches."""
+    started = time.perf_counter()
+    expected_root = read_json(root / "build.json")["signature"]
+    completed_path = root / "staging.json"
+    if completed_path.exists():
+        completed = read_json(completed_path)
+        try:
+            check_document(completed)
+        except ValueError:
+            completed = {"signature": expected_root, "required_units": []}
+        if completed["signature"] != expected_root:
+            raise ValueError("staging configuration changed")
+        if completed["required_units"] and all(
+            receipt_valid(root, u["id"], u["signature"])
+            for u in completed["required_units"]
+        ):
+            return [
+                root / "units" / u["id"] / "rows.parquet"
+                for u in completed["required_units"]
+            ]
+    paths, units = [], []
+    processed = 0
+    worker_pids = set()
+    cpu_seconds = 0.0
+    process_workers = effective_workers(workers, memory_gb, per_worker_gb=0.35)
+    executor = None
+    try:
+        for source_index, source in enumerate(sources):
+            name = source.name or (
+                Path(source.path).name if source.path else f"source-{source_index}"
             )
+            context = (
+                source_index,
+                name,
+                source.id_column,
+                source.smiles_column,
+                source.split_column,
+                source.metadata_columns,
+                chemistry,
+                fingerprint,
+            )
+            pending, chunk = [], 0
 
-            def make(directory):
-                def normalize(item):
-                    source_row, original = item
-                    row = {
-                        "row_id": signature([source_index, source_row]),
-                        "source": name,
-                        "source_row": source_row,
-                        "original_id": str(original.get(source.id_column, ""))
-                        if original.get(source.id_column) is not None
-                        else "",
-                        "original_smiles": str(original.get(source.smiles_column, ""))
-                        if original.get(source.smiles_column) is not None
-                        else "",
-                        "split": None
-                        if source.split_column is None
-                        else str(original.get(source.split_column, "")),
-                        "metadata": json.dumps(
-                            {key: original.get(key) for key in source.metadata_columns},
-                            sort_keys=True,
-                            default=str,
-                        ),
-                    }
-                    try:
-                        canonical, mol_id, fp, count = prepare(
-                            row["original_smiles"], chemistry, fingerprint
+            def flush(items, number, source_index=source_index, context=context):
+                nonlocal executor, processed, cpu_seconds
+                unit = f"stage-{source_index:04d}-{number:08d}"
+                expected = signature({"root": expected_root, "unit": unit})
+
+                def make(directory):
+                    nonlocal executor, cpu_seconds
+                    if process_workers > 1 and len(items) >= 1024:
+                        if executor is None:
+                            executor = ProcessPoolExecutor(
+                                max_workers=process_workers,
+                            )
+                        blocks = [items[i : i + 256] for i in range(0, len(items), 256)]
+                        results = executor.map(
+                            _normalize_batch, blocks, itertools.repeat(context)
                         )
-                        row.update(
-                            canonical_smiles=canonical,
-                            molecule_id=mol_id,
-                            fingerprint=fp,
-                            popcount=count,
-                            error=None,
-                        )
-                    except (ValueError, RuntimeError, OverflowError) as error:
-                        row.update(
-                            canonical_smiles=None,
-                            molecule_id=None,
-                            fingerprint=None,
-                            popcount=None,
-                            error=str(error),
-                        )
-                    return row
+                    else:
+                        results = [_normalize_batch(items, context)]
+                    normalized = []
+                    for rows, pid, cpu in results:
+                        normalized.extend(rows)
+                        worker_pids.add(pid)
+                        cpu_seconds += cpu
+                    write_rows(directory / "rows.parquet", normalized, STAGE_SCHEMA)
 
-                with ThreadPoolExecutor(
-                    max_workers=effective_workers(workers, memory_gb)
-                ) as pool:
-                    normalized = list(pool.map(normalize, items))
-                write_rows(directory / "rows.parquet", normalized, STAGE_SCHEMA)
+                publish_unit(root, unit, expected, make)
+                paths.append(root / "units" / unit / "rows.parquet")
+                units.append({"id": unit, "signature": expected})
+                processed += len(items)
+                atomic_json(
+                    root / "progress.json",
+                    {
+                        "state": "staging",
+                        "staged_chunks": len(paths),
+                        "selected_rows": processed,
+                        "source_index": source_index,
+                        "process_workers": process_workers,
+                        "worker_pids": sorted(worker_pids),
+                        "preparation_cpu_seconds": cpu_seconds,
+                        "preparation_wall_seconds": time.perf_counter() - started,
+                    },
+                )
 
-            publish_unit(root, unit, expected, make)
-            paths.append(root / "units" / unit / "rows.parquet")
-
-        for source_row, original in selected_rows(source):
-            pending.append((source_row, original))
-            if len(pending) >= chunk_size:
+            for source_row, original in selected_rows(source):
+                pending.append((source_row, original))
+                if len(pending) >= chunk_size:
+                    flush(pending, chunk)
+                    chunk += 1
+                    pending = []
+            if pending:
                 flush(pending, chunk)
-                chunk += 1
-                pending = []
-        if pending:
-            flush(pending, chunk)
-    if not paths:
-        unit = "stage-empty"
-        expected = signature(
-            {"root": read_json(root / "build.json")["signature"], "unit": unit}
+        if not paths:
+            unit = "stage-empty"
+            expected = signature({"root": expected_root, "unit": unit})
+            publish_unit(
+                root,
+                unit,
+                expected,
+                lambda directory: write_rows(
+                    directory / "rows.parquet", [], STAGE_SCHEMA
+                ),
+            )
+            paths.append(root / "units" / unit / "rows.parquet")
+            units.append({"id": unit, "signature": expected})
+        atomic_json(
+            completed_path,
+            seal(
+                {
+                    "signature": expected_root,
+                    "required_units": units,
+                    "selected_rows": processed,
+                }
+            ),
         )
-        publish_unit(
-            root,
-            unit,
-            expected,
-            lambda directory: write_rows(directory / "rows.parquet", [], STAGE_SCHEMA),
-        )
-        paths.append(root / "units" / unit / "rows.parquet")
-    return paths
+        return paths
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True)
 
 
 @dataclass(frozen=True)
@@ -183,47 +291,22 @@ class MoleculeIndex:
     def open(cls, path: str | Path) -> "MoleculeIndex":
         path = Path(path).resolve()
         manifest = read_json(path / "manifest.json")
-        if manifest.get("format_version") != 1:
-            raise ValueError("unsupported index format version")
-        descriptor = {
-            key: value
-            for key, value in manifest.items()
-            if key
-            not in {
-                "signature",
-                "molecule_count",
-                "alias_count",
-                "invalid_count",
-                "stage_units",
-                "shards",
-            }
-        }
-        if signature(descriptor) != manifest.get("signature"):
+        check_preparation(manifest)
+        check_document(manifest)
+        if signature(index_descriptor(manifest)) != manifest.get("signature"):
             raise ValueError("index manifest configuration was changed")
-        plan = read_json(path / "build-plan.json")
-        if (
-            plan["manifest"] != manifest
-            or signature(plan["tasks"]) != plan["tasks_signature"]
-        ):
-            raise ValueError(
-                "index manifest is incomplete or incompatible with its build plan"
-            )
-        required = (
-            [("catalog", manifest["signature"])]
-            + [(unit["id"], unit["signature"]) for unit in manifest["stage_units"]]
-            + [(shard["id"], shard["signature"]) for shard in manifest["shards"]]
-        )
-        for unit, expected in required:
-            receipt_path = path / "receipts" / f"{unit}.json"
+        # Metadata-only opening; scientific readers checksum the units they consume.
+        for unit in manifest["required_units"]:
+            receipt_path = path / "receipts" / f"{unit['id']}.json"
             if not receipt_path.is_file():
-                raise ValueError(f"incomplete index unit: {unit}")
+                raise ValueError(f"incomplete index unit: {unit['id']}")
             receipt = read_json(receipt_path)
             if (
-                receipt["signature"] != expected
-                or not receipt["files"]
+                receipt.get("signature") != unit["signature"]
+                or not receipt.get("files")
                 or not all((path / item["path"]).is_file() for item in receipt["files"])
             ):
-                raise ValueError(f"incomplete or incompatible index unit: {unit}")
+                raise ValueError(f"incomplete or incompatible index unit: {unit['id']}")
         if manifest["rdkit_version"] != RDKIT_VERSION:
             raise ValueError(
                 "index RDKit version differs from runtime; rebuild the index"
@@ -257,6 +340,27 @@ class MoleculeIndex:
     def molecules(self, batch_size: int = 8192) -> Iterator[pa.RecordBatch]:
         """Iterate Arrow batches without materializing the catalog."""
         return pq.ParquetFile(self.molecules_path).iter_batches(batch_size=batch_size)
+
+
+def index_descriptor(manifest):
+    return {
+        key: value
+        for key, value in manifest.items()
+        if key
+        not in {
+            "signature",
+            "integrity",
+            "toolkit_version",
+            "molecule_count",
+            "alias_count",
+            "invalid_count",
+            "stage_units",
+            "build_inputs",
+            "shards",
+            "required_units",
+            "compact",
+        }
+    }
 
 
 DEFAULT_CHEMISTRY = ChemistryConfig()
@@ -300,7 +404,8 @@ def _prepare_build(
         if source.path is not None
     }
     descriptor = {
-        "format_version": 1,
+        "format_version": FORMAT_VERSION,
+        "preparation_version": PREPARATION_VERSION,
         "sources": source_descriptors(sources),
         "chemistry": chemistry.to_dict(),
         "fingerprint": fingerprint.to_dict(),
@@ -313,13 +418,22 @@ def _prepare_build(
         "chunk_size": chunk_size,
     }
     expected = signature(descriptor)
+    if (root / "manifest.json").exists() and read_json(root / "manifest.json").get(
+        "compact"
+    ):
+        raise ValueError(
+            "compact indexes are immutable search artifacts; resume the original build"
+        )
     if (root / "build.json").exists():
         if not resume or read_json(root / "build.json")["signature"] != expected:
             raise ValueError(
                 "resume refused: inputs or configuration changed, or resume disabled"
             )
     else:
-        atomic_json(root / "build.json", {**descriptor, "signature": expected})
+        atomic_json(
+            root / "build.json",
+            {**descriptor, "signature": expected, "toolkit_version": __version__},
+        )
     paths = stage_sources(
         sources,
         root,
@@ -373,8 +487,29 @@ def _prepare_build(
         }
         for number in range(math.ceil(count / shard_size))
     ]
+    build_inputs = []
+    for number, shard in enumerate(shards):
+        unit = f"build-input-{number:08d}"
+        unit_signature = signature([expected, unit])
+
+        def partition(directory, number=number):
+            con = connect(memory_gb, scratch or root / "scratch")
+            try:
+                con.execute(
+                    f"COPY (SELECT molecule_id,canonical_smiles,fingerprint,popcount,ordinal - {number * shard_size} AS local_id FROM read_parquet({sql_path(catalog_path)}) WHERE ordinal > {number * shard_size} AND ordinal <= {(number + 1) * shard_size} ORDER BY ordinal) TO {sql_path(directory / 'molecules.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+            finally:
+                con.close()
+
+        publish_unit(root, unit, unit_signature, partition)
+        build_inputs.append({"id": unit, "signature": unit_signature})
     manifest = {
         **descriptor,
+        "toolkit_version": read_json(root / "build.json")["toolkit_version"],
+        "compact": False,
+        "build_inputs": build_inputs,
+        "required_units": [{"id": "catalog", "signature": expected}]
+        + [{"id": sh["id"], "signature": sh["signature"]} for sh in shards],
         "stage_units": [
             {
                 "id": p.parent.name,
@@ -394,8 +529,13 @@ def _prepare_build(
         ).metadata.num_rows,
         "shards": shards,
     }
+    manifest = seal(manifest)
     plan = {
         "kind": "build",
+        "required_units": manifest["stage_units"]
+        + [{"id": "catalog", "signature": expected}]
+        + build_inputs
+        + [{"id": sh["id"], "signature": sh["signature"]} for sh in shards],
         "signature": expected,
         "manifest": manifest,
         "memory_gb": memory_gb,
@@ -405,7 +545,7 @@ def _prepare_build(
         ],
     }
     plan["tasks_signature"] = signature(plan["tasks"])
-    atomic_json(root / "build-plan.json", plan)
+    atomic_json(root / "build-plan.json", seal(plan))
     return root / "build-plan.json"
 
 
@@ -488,28 +628,16 @@ def plan_build(
 def _build_plan(plan_path):
     path = Path(plan_path).resolve()
     plan = read_json(path)
-    descriptor = {
-        key: value
-        for key, value in plan["manifest"].items()
-        if key
-        not in {
-            "signature",
-            "molecule_count",
-            "alias_count",
-            "invalid_count",
-            "stage_units",
-            "shards",
-        }
-    }
+    check_document(plan)
+    check_document(plan["manifest"])
+    check_preparation(plan["manifest"])
     if (
-        signature(descriptor) != plan["signature"]
+        signature(index_descriptor(plan["manifest"])) != plan["signature"]
         or signature(plan["tasks"]) != plan["tasks_signature"]
     ):
         raise ValueError("build plan configuration or tasks changed")
     if [task["id"] for task in plan["tasks"]] != list(range(len(plan["tasks"]))):
         raise ValueError("invalid or duplicate build task IDs")
-    if not receipt_valid(path.parent, "catalog", plan["signature"]):
-        raise ValueError("build catalog is incomplete or corrupt")
     return path.parent, plan
 
 
@@ -523,21 +651,19 @@ def run_build_task(plan_path: str | Path, task_id: int, *, _context=None) -> Pat
     if plan["tasks"][task_id]["shard"] != shard["id"]:
         raise ValueError("build task does not match shard")
 
+    dependency = manifest["build_inputs"][task_id]
+    check_units(root, [dependency])
+
     def make(directory):
-        con = connect(plan["memory_gb"], plan["scratch"])
-        try:
-            catalog_path = root / "units/catalog/molecules.parquet"
-            shard_size = manifest["shard_size"]
-            con.execute(
-                f"COPY (SELECT molecule_id,canonical_smiles,fingerprint,popcount,ordinal - {task_id * shard_size} AS local_id FROM read_parquet({sql_path(catalog_path)}) WHERE ordinal > {task_id * shard_size} AND ordinal <= {(task_id + 1) * shard_size} ORDER BY ordinal) TO {sql_path(directory / 'molecules.parquet')} (FORMAT PARQUET, COMPRESSION ZSTD)"
-            )
-            write_shard(
-                directory / "fingerprints.h5",
-                batches(directory / "molecules.parquet"),
-                FingerprintConfig.from_dict(manifest["fingerprint"]),
-            )
-        finally:
-            con.close()
+        shutil.copyfile(
+            root / "units" / dependency["id"] / "molecules.parquet",
+            directory / "molecules.parquet",
+        )
+        write_shard(
+            directory / "fingerprints.h5",
+            batches(directory / "molecules.parquet"),
+            FingerprintConfig.from_dict(manifest["fingerprint"]),
+        )
 
     publish_unit(root, shard["id"], shard["signature"], make)
     return root / "receipts" / f"{shard['id']}.json"
@@ -546,6 +672,7 @@ def run_build_task(plan_path: str | Path, task_id: int, *, _context=None) -> Pat
 def merge_build(plan_path: str | Path) -> MoleculeIndex:
     """Publish an index only after all immutable shard receipts validate."""
     root, plan = _build_plan(plan_path)
+    check_units(root, plan["required_units"], exact=True)
     expected = {shard["id"] for shard in plan["manifest"]["shards"]}
     existing = {path.stem for path in (root / "receipts").glob("shard-*.json")}
     if existing - expected:
@@ -555,3 +682,42 @@ def merge_build(plan_path: str | Path) -> MoleculeIndex:
             raise ValueError(f"incomplete or corrupt build shard {shard['id']}")
     atomic_json(root / "manifest.json", plan["manifest"])
     return MoleculeIndex.open(root)
+
+
+def export_index(index: MoleculeIndex | str | Path, out: str | Path) -> MoleculeIndex:
+    """Atomically copy a verified index without staging/build inputs or raw sources.
+
+    The compact index supports search/filter/verify, but not rebuilding. Original
+    source descriptors and all aliases remain as provenance. Never modifies inputs.
+    """
+    import os
+    import tempfile
+
+    index = MoleculeIndex.open(
+        index.path if isinstance(index, MoleculeIndex) else index
+    )
+    target = Path(out).resolve()
+    if target.exists():
+        raise ValueError("export destination must not exist")
+    check_units(index.path, index.manifest["required_units"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=".compact-", dir=target.parent))
+    try:
+        for unit in index.manifest["required_units"]:
+            shutil.copytree(
+                index.path / "units" / unit["id"], temporary / "units" / unit["id"]
+            )
+            (temporary / "receipts").mkdir(exist_ok=True)
+            shutil.copyfile(
+                index.path / "receipts" / f"{unit['id']}.json",
+                temporary / "receipts" / f"{unit['id']}.json",
+            )
+        manifest = seal(
+            {**index.manifest, "stage_units": [], "build_inputs": [], "compact": True}
+        )
+        atomic_json(temporary / "manifest.json", manifest)
+        os.rename(temporary, target)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+    return MoleculeIndex.open(target)

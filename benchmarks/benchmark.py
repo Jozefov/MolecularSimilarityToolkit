@@ -17,6 +17,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
+import psutil
 import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,87 @@ def rss():
     return value / (1024**2 if sys.platform == "darwin" else 1024)
 
 
+def _write_validation(out, phase, matches, rejected):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = pa.schema(
+        [
+            ("query_id", pa.string()),
+            ("molecule_id", pa.string()),
+            ("rank", pa.int64()),
+            ("intersection", pa.int64()),
+            ("union", pa.int64()),
+        ]
+    )
+    rows = []
+    for qid, candidates in sorted(matches.items()):
+        for rank, (mol_id, a, b) in enumerate(candidates, 1):
+            rows.append(
+                {
+                    "query_id": qid,
+                    "molecule_id": mol_id,
+                    "rank": rank,
+                    "intersection": a,
+                    "union": b,
+                }
+            )
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=schema), out / f"{phase}-matches.parquet"
+    )
+    pq.write_table(
+        pa.table(
+            {"molecule_id": sorted(rejected)},
+            schema=pa.schema([("molecule_id", pa.string())]),
+        ),
+        out / f"{phase}-rejected.parquet",
+    )
+
+
+def compare_results(out, phases, k):
+    """Compare coverage, exact ordered identities/counts, and rejection identity sets."""
+    import duckdb
+
+    out = Path(out)
+    with open(out / "queries.tsv") as f:
+        expected = {r["id"] for r in csv.DictReader(f, delimiter="\t")}
+    if not expected:
+        raise ValueError("benchmark requires valid queries")
+    con = duckdb.connect()
+
+    def relation(phase, table):
+        return (
+            "read_parquet('"
+            + str(out / f"{phase}-{table}.parquet").replace("'", "''")
+            + "')"
+        )
+
+    checks = {}
+    for phase in phases:
+        table = relation(phase, "matches")
+        coverage = dict(
+            con.execute(
+                f"SELECT query_id,count(*) FROM {table} GROUP BY query_id"
+            ).fetchall()
+        )
+        checks[f"{phase}_query_coverage"] = set(coverage) == expected and all(
+            n == k for n in coverage.values()
+        )
+        if phase == "package":
+            continue
+        for table in ["matches", "rejected"]:
+            a, b = relation("package", table), relation(phase, table)
+            difference = con.execute(
+                f"SELECT count(*) FROM ((SELECT * FROM {a} EXCEPT ALL SELECT * FROM {b}) UNION ALL (SELECT * FROM {b} EXCEPT ALL SELECT * FROM {a}))"
+            ).fetchone()[0]
+            checks[f"{phase}_{table}_exact_identities"] = difference == 0
+    con.close()
+    return checks
+
+
 def stage(args):
+    from fractions import Fraction
+
     from FPSim2 import FPSim2Engine
     from rdkit import DataStructs
 
@@ -68,6 +149,8 @@ def stage(args):
             )
             if len(selected) >= args.queries:
                 break
+        if not selected:
+            raise ValueError("benchmark requires valid molecules")
         with open(out / "queries.tsv", "w") as f:
             writer = csv.DictWriter(f, fieldnames=["id", "smiles"], delimiter="\t")
             writer.writeheader()
@@ -75,6 +158,13 @@ def stage(args):
         timings.update(
             unique_molecules=index.size,
             invalid_molecules=index.manifest["invalid_count"],
+        )
+        progress = json.loads((index.path / "progress.json").read_text())
+        timings.update(
+            preparation_cpu_seconds=progress["preparation_cpu_seconds"],
+            worker_pids=progress["worker_pids"],
+            process_workers=progress["process_workers"],
+            preparation_wall_seconds=progress["preparation_wall_seconds"],
         )
     elif args.phase == "package":
         index = mst.MoleculeIndex.open(out / "index")
@@ -98,15 +188,19 @@ def stage(args):
                 memory_gb=args.memory_gb,
             )
         )
-        timings.update(search=hits.summary, filter=clean.summary)
-        scores = {}
-        for batch in hits.batches():
-            for row in batch.to_pylist():
-                scores.setdefault(row["query_original_id"], []).append(
-                    row["similarity"]
-                )
-        timings["scores"] = scores
-        timings["rejected_count"] = clean.summary["rejected_count"]
+        con = __import__("duckdb").connect()
+        con.execute(
+            f"COPY (SELECT query_original_id AS query_id,molecule_id,rank,intersection,\"union\" FROM read_parquet('{hits.table_path()}')) TO '{out / 'package-matches.parquet'}' (FORMAT PARQUET)"
+        )
+        con.execute(
+            f"COPY (SELECT molecule_id FROM read_parquet('{clean.table_path('rejected')}')) TO '{out / 'package-rejected.parquet'}' (FORMAT PARQUET)"
+        )
+        con.close()
+        timings.update(
+            search=hits.summary,
+            filter=clean.summary,
+            rejected_count=clean.summary["rejected_count"],
+        )
     else:
         from molecular_similarity_toolkit.chemistry import prepare
 
@@ -116,97 +210,124 @@ def stage(args):
                 (r["id"], prepare(r["smiles"], index.chemistry, index.fingerprint)[2])
                 for r in csv.DictReader(f, delimiter="\t")
             ]
-        scores = {qid: [] for qid, _ in queries}
+        matches = {qid: [] for qid, _ in queries}
+        rejected = set()
         load_seconds = search_seconds = filter_seconds = 0.0
-        rejected_count = 0
         for shard in index.manifest["shards"]:
             path = index.path / "units" / shard["id"]
+            start = time.perf_counter()
+            table = pq.read_table(
+                path / "molecules.parquet", columns=["molecule_id", "fingerprint"]
+            )
+            ids = table["molecule_id"].to_pylist()
+            packed = table["fingerprint"].to_pylist()
+            matrix = np.frombuffer(b"".join(packed), dtype=np.uint8).reshape(
+                -1, index.fingerprint.n_bits // 8
+            )
+            load_seconds += time.perf_counter() - start
             if args.phase == "direct":
                 engine, elapsed = timed(
                     lambda path=path: FPSim2Engine(str(path / "fingerprints.h5"))
                 )
                 load_seconds += elapsed
-                rejected = set()
-                for qid, packed in queries:
-                    fp = DataStructs.CreateFromBinaryText(packed)
-                    hits, elapsed = timed(
-                        lambda engine=engine, fp=fp: engine.top_k(
-                            fp, k=args.k, threshold=0.0, n_workers=args.workers
+                for qid, qbytes in queries:
+                    q = DataStructs.CreateFromBinaryText(qbytes)
+                    initial, elapsed = timed(
+                        lambda q=q, engine=engine: engine.top_k(
+                            q, k=args.k, threshold=0.0, n_workers=args.workers
                         )
                     )
                     search_seconds += elapsed
-                    scores[qid].extend(float(v) for v in hits["coeff"])
+                    boundary = max(
+                        0.0,
+                        float(
+                            np.nextafter(
+                                np.nextafter(
+                                    np.float32(initial["coeff"].min()),
+                                    np.float32(-np.inf),
+                                )
+                                if len(initial)
+                                else np.float32(0),
+                                np.float32(-np.inf),
+                            )
+                        ),
+                    )
+                    candidates = engine.similarity(q, threshold=boundary)
+                    local = []
+                    for row in candidates:
+                        i = int(row["mol_id"]) - 1
+                        fp = DataStructs.CreateFromBinaryText(packed[i])
+                        a = (q & fp).GetNumOnBits()
+                        b = (q | fp).GetNumOnBits()
+                        local.append((ids[i], a, b))
+                    local.sort(key=lambda r: (-Fraction(r[1], r[2]), r[0]))
+                    matches[qid].extend(local[: args.k])
                     hits, elapsed = timed(
-                        lambda engine=engine, fp=fp: engine.similarity(
-                            fp, threshold=0.8, n_workers=args.workers
+                        lambda q=q, engine=engine: engine.similarity(
+                            q,
+                            threshold=float(
+                                np.nextafter(np.float32(0.8), np.float32(-np.inf))
+                            ),
+                            n_workers=args.workers,
                         )
                     )
                     filter_seconds += elapsed
-                    # Direct backend float32 threshold timings are reported separately.
-                    # Compare counts using > 0.8 after rounding; exact-boundary oracle tests
-                    # live in the test suite rather than using this baseline as an oracle.
-                    rejected.update(
-                        int(r["mol_id"]) for r in hits if r["coeff"] > np.float32(0.8)
-                    )
-                rejected_count += len(rejected)
+                    for row in hits:
+                        i = int(row["mol_id"]) - 1
+                        fp = DataStructs.CreateFromBinaryText(packed[i])
+                        if (q & fp).GetNumOnBits() * 5 > (q | fp).GetNumOnBits() * 4:
+                            rejected.add(ids[i])
                 del engine
             else:
-                start = time.perf_counter()
-                packed_rows = pq.read_table(
-                    path / "molecules.parquet", columns=["fingerprint"]
-                )["fingerprint"].to_pylist()
-                matrix = np.frombuffer(b"".join(packed_rows), dtype=np.uint8).reshape(
-                    -1, index.fingerprint.n_bits // 8
-                )
-                del packed_rows
-                load_seconds += time.perf_counter() - start
-                rejected = np.zeros(len(matrix), dtype=bool)
-                for qid, packed in queries:
-                    query = np.frombuffer(packed, dtype=np.uint8)
+                for qid, qbytes in queries:
+                    q = np.frombuffer(qbytes, dtype=np.uint8)
                     start = time.perf_counter()
-                    # Historical NumPy baseline: byte lookup + per-query reference popcount.
-                    inter = POP[query & matrix].sum(axis=1)
-                    similarity = inter / np.maximum(
-                        int(POP[query].sum()) + POP[matrix].sum(axis=1) - inter, 1
-                    )
-                    top = np.partition(similarity, max(0, len(similarity) - args.k))[
-                        -args.k :
+                    inter = POP[q & matrix].sum(1)
+                    union = int(POP[q].sum()) + POP[matrix].sum(1) - inter
+                    sim = inter / union
+                    boundary = np.partition(sim, max(0, len(sim) - args.k))[
+                        max(0, len(sim) - args.k)
                     ]
-                    scores[qid].extend(float(v) for v in top)
+                    candidates = np.flatnonzero(sim >= boundary)
+                    chosen = sorted(candidates, key=lambda i: (-sim[i], ids[i]))[
+                        : args.k
+                    ]
+                    matches[qid].extend(
+                        (ids[i], int(inter[i]), int(union[i])) for i in chosen
+                    )
                     search_seconds += time.perf_counter() - start
                     start = time.perf_counter()
-                    rejected |= similarity > 0.8
+                    rejected.update(
+                        ids[i] for i in np.flatnonzero(inter * 5 > union * 4)
+                    )
                     filter_seconds += time.perf_counter() - start
-                rejected_count += int(rejected.sum())
-                del matrix
+            del matrix, table, packed, ids
+        for qid, values in matches.items():
+            values.sort(key=lambda r: (-Fraction(r[1], r[2]), r[0]))
+            matches[qid] = values[: args.k]
+        _write_validation(out, args.phase, matches, rejected)
         timings.update(
             load_seconds=load_seconds,
             search_seconds=search_seconds,
             filter_seconds=filter_seconds,
-            rejected_count=rejected_count,
-            scores={
-                qid: sorted(v, reverse=True)[: args.k] for qid, v in scores.items()
-            },
+            rejected_count=len(rejected),
         )
-        if args.phase == "numpy":
-            timings["filter_timing_note"] = (
-                "Mask update only; similarity computation is included in search_seconds and reused."
-            )
-    timings["peak_rss_mib"] = rss()
-    timings["phase"] = args.phase
+        timings["timing_note"] = (
+            "Native initial top-k/threshold kernels only; exact boundary expansion, identity/count verification and output are outside kernel timings."
+            if args.phase == "direct"
+            else "Historical per-query NumPy byte-popcount scan; filter mask reuses computed similarities. Stable identity ties included in search time."
+        )
+    timings.update(peak_rss_mib=rss(), phase=args.phase)
     (out / f"{args.phase}.json").write_text(json.dumps(timings, indent=2) + "\n")
 
 
 def real(args):
     out = Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    if any(
-        (out / f"{phase}.json").exists()
-        for phase in ("build", "package", "direct", "numpy")
-    ):
+    if out.exists() and any(out.iterdir()):
         raise SystemExit(
-            "Use a fresh output directory for measured runs; resume timings would be misleading."
+            "Use a fresh output directory; resumed timings would be misleading"
         )
+    out.mkdir(parents=True, exist_ok=True)
     # The selected input is immutable and small relative to the upstream corpus.
     source = Path(args.source).resolve()
     read_rows = 0
@@ -266,7 +387,16 @@ def real(args):
         "shard_size": args.shard_size,
         "threshold": 0.8,
         "comparison": ">",
-        "phase_order": ["build", "package", "direct", "numpy"],
+        "phase_order": ["build", "package", "direct"]
+        + ([] if args.skip_numpy else ["numpy"]),
+        "query_selection": "First unique molecules in stable-ID order; varies with subset size",
+        "source_checksums": {
+            p.name: checksum(p)
+            for p in sorted((ROOT / "src/molecular_similarity_toolkit").glob("*.py"))
+        },
+        "code_revision": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip(),
     }
     (out / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     for phase in metadata["phase_order"]:
@@ -291,7 +421,30 @@ def real(args):
             "--shard-size",
             str(args.shard_size),
         ]
-        subprocess.run(command, check=True)
+        process = subprocess.Popen(command)
+        peak_tree = 0
+        while process.poll() is None:
+            try:
+                parent = psutil.Process(process.pid)
+                total = 0
+                for child in [parent, *parent.children(recursive=True)]:
+                    try:
+                        total += child.memory_info().rss
+                    except psutil.NoSuchProcess:
+                        pass
+                peak_tree = max(peak_tree, total)
+            except psutil.NoSuchProcess:
+                pass
+            time.sleep(0.05)
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, command)
+        phase_path = out / f"{phase}.json"
+        measurement = json.loads(phase_path.read_text())
+        measurement["peak_process_tree_rss_mib"] = peak_tree / 2**20
+        measurement["memory_note"] = (
+            "Process-tree RSS sampled every 50 ms; includes preparation subprocesses. peak_rss_mib is the parent OS high-water mark."
+        )
+        phase_path.write_text(json.dumps(measurement, indent=2) + "\n")
         print(f"Completed {phase}: {out}", flush=True)
     report = {
         **metadata,
@@ -299,18 +452,12 @@ def real(args):
             json.loads((out / f"{p}.json").read_text()) for p in metadata["phase_order"]
         ],
     }
-    package, direct, numpy = report["measurements"][1:]
-    report["checks"] = {
-        "topk_scores_vs_numpy": all(
-            np.allclose(v, numpy["scores"][q], rtol=0, atol=1e-14)
-            for q, v in package["scores"].items()
-        ),
-        "topk_scores_vs_direct_float32": all(
-            np.allclose(v, direct["scores"][q], rtol=0, atol=1e-7)
-            for q, v in package["scores"].items()
-        ),
-        "rejected_count_vs_numpy": package["rejected_count"] == numpy["rejected_count"],
-    }
+    import molecular_similarity_toolkit as mst
+
+    index = mst.MoleculeIndex.open(out / "index")
+    report["checks"] = compare_results(
+        out, metadata["phase_order"][1:], min(args.k, index.size)
+    )
     (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     if not all(report["checks"].values()):
         raise SystemExit("Benchmark correctness comparison failed")
@@ -378,6 +525,14 @@ def synthetic(args):
         print(f"Synthetic shard {shard + 1}/{shard_count} verified", flush=True)
     report = {
         "kind": "synthetic fingerprints, NOT real molecules",
+        "dependency_versions": {
+            name: version(name)
+            for name in ("molecular-similarity-toolkit", "rdkit", "FPSim2", "numpy")
+        },
+        "source_checksums": {
+            p.name: checksum(p)
+            for p in sorted((ROOT / "src/molecular_similarity_toolkit").glob("*.py"))
+        },
         "rows": args.rows,
         "seed": args.seed,
         "distribution": "uniform random packed bytes (approximately 50% set bits)",
@@ -424,6 +579,11 @@ def main():
         p.add_argument("--shard-size", type=positive_int, default=1_000_000)
         if command == "real":
             p.add_argument("--source", required=True)
+            p.add_argument(
+                "--skip-numpy",
+                action="store_true",
+                help="Large-query run: validate every identity against direct FPSim2; omit the slower NumPy baseline",
+            )
             p.add_argument("--smiles-column", default="smiles")
             p.add_argument("--id-column", default="id")
             p.add_argument("--limit", type=positive_int, default=100_000)

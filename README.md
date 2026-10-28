@@ -24,11 +24,15 @@ as separate tasks on a cluster.
 ## Install
 
 Python **3.11–3.13** on Linux x86-64 or macOS arm64. This is a private release
-candidate; your GitHub account needs access to the repository.
+candidate. The repository remains private until release review is approved.
 
 ```bash
-pip install 'git+ssh://git@github.com/Jozefov/MolecularSimilarityToolkit.git'
+pip install 'git+https://github.com/Jozefov/MolecularSimilarityToolkit.git'
 ```
+
+The HTTPS URL is the public installation URL prepared for release. While the
+repository is private, authenticate Git or install from an authorized local
+checkout with `pip install .`. Nothing is published on PyPI yet.
 
 ## Build a protected training pool
 
@@ -67,7 +71,9 @@ hits.export('candidates.tsv')
 
 Matches are ranked from closest to furthest. An identical molecule can be a
 match; use `exclude_identity=True` to leave it out. The result files stay on disk.
-Use `hits.batches()` to read a little at a time.
+Use `hits.batches()` to read a little at a time. Later, reopen a run with
+`mst.Result.open('runs/candidates')`. The CLI also exports tables:
+`mol-sim export runs/candidates candidates.tsv`.
 
 Try the complete tiny example from a checkout:
 
@@ -86,7 +92,8 @@ same fingerprint.
 
 The default fingerprint is Morgan, radius 2, with 2,048 bits. The default
 chemistry removes stereochemistry and keeps charges, salts, isotope labels,
-and tautomer forms. You can change these rules, but both sides of a comparison
+and tautomer forms. Atom-map labels are removed by default. You can change
+these rules, but both sides of a comparison
 must use the same settings.
 
 With `comparison='>'` and `threshold=0.8`:
@@ -121,7 +128,7 @@ a large run.
 
 - [Python API](docs/api.md) and [input/output tables](docs/data.md)
 - [Chemistry and fingerprint rules](docs/chemistry.md)
-- [Restart and integrity checks](docs/restart.md)
+- [Restart, progress, and portable compact indexes](docs/restart.md)
 - [Cluster jobs: Slurm and PBS](docs/hpc.md)
 - [Performance and benchmark commands](docs/performance.md)
 - [Release checks](docs/release.md), [contributing](CONTRIBUTING.md), and [MIT license](LICENSE)

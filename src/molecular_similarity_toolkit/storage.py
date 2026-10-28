@@ -149,3 +149,30 @@ def connect(memory_gb=4, scratch=None):
 
 def sql_path(path: Path) -> str:
     return "'" + str(path).replace("'", "''") + "'"
+
+
+def seal(value: dict) -> dict:
+    """Checksum an immutable JSON document (integrity, not authentication)."""
+    value = {key: item for key, item in value.items() if key != "integrity"}
+    return {**value, "integrity": signature(value)}
+
+
+def check_document(value: dict):
+    if value.get("integrity") != seal(value)["integrity"]:
+        raise ValueError("manifest changed or incomplete document; replan/rebuild")
+
+
+def check_units(root: Path, required: list[dict], *, skip=(), exact=False):
+    """One dependency contract for execution, reduction and full verification."""
+    identifiers = [unit["id"] for unit in required]
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("duplicated required units")
+    if exact and {p.stem for p in (root / "receipts").glob("*.json")} - set(
+        identifiers
+    ):
+        raise ValueError("unexpected or duplicated unit receipts")
+    for unit in required:
+        if unit["id"] not in skip and not receipt_valid(
+            root, unit["id"], unit["signature"]
+        ):
+            raise ValueError(f"required unit {unit['id']} is incomplete or corrupt")
