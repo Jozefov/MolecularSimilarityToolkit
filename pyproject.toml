@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "molecular-similarity-toolkit"
+version = "0.1.0"
+description = "Exact, disk-backed molecular similarity search and leakage filtering"
+requires-python = ">=3.11,<3.14"
+license = "MIT"
+dependencies = ["FPSim2==0.7.4", "rdkit>=2024.3", "numpy>=1.26", "pyarrow>=16", "duckdb>=1.1", "typer>=0.12"]
+
+[project.scripts]
+mol-sim = "molecular_similarity_toolkit.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/molecular_similarity_toolkit"]
