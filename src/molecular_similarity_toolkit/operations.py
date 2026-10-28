@@ -326,6 +326,22 @@ def _best(rows, k):
 
 
 def run_task(
+    plan_path: str | Path, task_id: int, *, workers: int | None = None
+) -> Path:
+    """Run one planned task and return its checksummed completion-receipt path.
+
+    Accepts build, search, or filter plans. A worker override is capped by the
+    scheduler allocation and plan memory budget. Missing or damaged work is
+    repaired; a valid completed unit is reused. Invalid IDs, incompatible plans,
+    and corrupt inputs raise before publication. Run only one copy of each task
+    at a time; sequential retries are safe.
+
+    Example: ``mst.run_task('runs/candidates/plan.json', 0, workers=4)``.
+    """
+    return _run_task(plan_path, task_id, workers=workers)
+
+
+def _run_task(
     plan_path: str | Path,
     task_id: int,
     *,
@@ -646,7 +662,7 @@ def execute(
         if task["shard"] != shard_id:
             resident.clear()
             shard_id = task["shard"]
-        run_task(
+        _run_task(
             plan_path, task["id"], workers=workers, _resident=resident, _context=context
         )
     resident.clear()

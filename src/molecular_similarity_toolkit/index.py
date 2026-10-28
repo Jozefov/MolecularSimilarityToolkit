@@ -2,6 +2,7 @@
 
 import json
 import math
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -253,7 +254,7 @@ class MoleculeIndex:
     def invalid_path(self) -> Path:
         return self.path / "units" / "catalog" / "invalid.parquet"
 
-    def molecules(self, batch_size=8192):
+    def molecules(self, batch_size: int = 8192) -> Iterator[pa.RecordBatch]:
         """Iterate Arrow batches without materializing the catalog."""
         return pq.ParquetFile(self.molecules_path).iter_batches(batch_size=batch_size)
 
@@ -409,7 +410,7 @@ def _prepare_build(
 
 
 def build_index(
-    sources: Source | list[Source],
+    sources: Source | Iterable[Source],
     out: str | Path,
     *,
     chemistry: ChemistryConfig = DEFAULT_CHEMISTRY,
@@ -452,13 +453,36 @@ def build_index(
     return merge_build(path)
 
 
-def plan_build(sources, out: str | Path, **kwargs) -> Path:
+def plan_build(
+    sources: Source | Iterable[Source],
+    out: str | Path,
+    *,
+    chemistry: ChemistryConfig = DEFAULT_CHEMISTRY,
+    fingerprint: FingerprintConfig = DEFAULT_FINGERPRINT,
+    shard_size: int = 1_000_000,
+    workers: int = 4,
+    memory_gb: float = 4,
+    scratch: str | Path | None = None,
+    resume: bool = True,
+    chunk_size: int = 8192,
+) -> Path:
     """Coordinate streaming staging and dedup, then plan independent HDF5 shards.
 
     Only this preparation step writes staging/catalog tables. Distributed tasks
     write separate immutable shard directories and never share HDF5 writers.
     """
-    return _prepare_build(sources, out, **kwargs)
+    return _prepare_build(
+        sources,
+        out,
+        chemistry=chemistry,
+        fingerprint=fingerprint,
+        shard_size=shard_size,
+        workers=workers,
+        memory_gb=memory_gb,
+        scratch=scratch,
+        resume=resume,
+        chunk_size=chunk_size,
+    )
 
 
 def _build_plan(plan_path):
