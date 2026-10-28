@@ -369,9 +369,7 @@ def run_task(
             16_000_000,
             n * 40 + (min(n, plan["k"]) * 900 if plan["kind"] == "search" else 0),
         )
-        available = (
-            plan["memory_gb"] * 1_000_000_000 * 0.8 - resident_bytes - state_bytes
-        )
+        available = plan["memory_gb"] * 2**30 * 0.8 - resident_bytes - state_bytes
         if available < query_bytes:
             raise MemoryError(
                 "shard/query state exceeds memory budget; rebuild with smaller shard_size or increase memory_gb"
@@ -620,8 +618,20 @@ def merge(plan_path: str | Path) -> Result | MoleculeIndex:
     return Result(root, plan["kind"])
 
 
-def execute(plan_path: str | Path, *, workers: int | None = None) -> Result:
-    """Run the same task units locally, one resident shard at a time, then reduce."""
+def execute(
+    plan_path: str | Path, *, workers: int | None = None
+) -> Result | MoleculeIndex:
+    """Execute an immutable build/search/filter plan locally and publish its merge.
+
+    Uses the same receipts and atomic task outputs as external schedulers. Search
+    and filter execution retains one read-only resident shard at a time, shared
+    by bounded query threads. Missing/corrupt task outputs are rerun; successful
+    units are reused. ``memory_gb`` in the plan is measured in GiB.
+    """
+    if read_json(Path(plan_path))["kind"] == "build":
+        for task in read_json(Path(plan_path))["tasks"]:
+            run_build_task(plan_path, task["id"])
+        return merge_build(plan_path)
     _root, plan, _ = _load_plan(plan_path)
     resident = {}
     shard_id = None

@@ -123,7 +123,7 @@ def connect(memory_gb=4, scratch=None):
     import duckdb
 
     connection = duckdb.connect()
-    connection.execute(f"SET memory_limit='{float(memory_gb)}GB'")
+    connection.execute(f"SET memory_limit='{float(memory_gb)}GiB'")
     connection.execute("SET threads=1")
     connection.execute("SET preserve_insertion_order=false")
     if scratch:

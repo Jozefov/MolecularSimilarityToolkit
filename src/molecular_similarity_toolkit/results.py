@@ -23,11 +23,17 @@ class Result:
         return read_json(self.path / "units/merge/summary.json")
 
     def table_path(self, table: str | None = None) -> Path:
-        return (
-            self.path
-            / "units/merge"
-            / f"{table or ('matches' if self.kind == 'search' else 'eligible')}.parquet"
+        table = table or ("matches" if self.kind == "search" else "eligible")
+        allowed = (
+            {"matches", "invalid"}
+            if self.kind == "search"
+            else {"eligible", "rejected", "invalid", "aliases"}
         )
+        if table not in allowed:
+            raise ValueError(
+                f"unknown {self.kind} table {table!r}; choose from {sorted(allowed)}"
+            )
+        return self.path / "units/merge" / f"{table}.parquet"
 
     def batches(
         self, table: str | None = None, *, batch_size: int = 8192
@@ -46,6 +52,11 @@ class Result:
     ) -> Path:
         """Export one result table to CSV or TSV with bounded memory."""
         path = Path(path)
+        if path.suffix.lower() not in {".csv", ".tsv"}:
+            raise ValueError("export path must end in .csv or .tsv")
+        if delimiter is not None and (len(delimiter) != 1 or delimiter in "\r\n"):
+            raise ValueError("delimiter must be one non-newline character")
+        self.table_path(table)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8", newline="") as handle:
             writer = None
@@ -54,7 +65,8 @@ class Result:
                     writer = csv.DictWriter(
                         handle,
                         fieldnames=batch.schema.names,
-                        delimiter=delimiter or ("\t" if path.suffix == ".tsv" else ","),
+                        delimiter=delimiter
+                        or ("\t" if path.suffix.lower() == ".tsv" else ","),
                     )
                     writer.writeheader()
                 writer.writerows(batch.to_pylist())
@@ -62,6 +74,7 @@ class Result:
                 schema = pq.ParquetFile(self.table_path(table)).schema_arrow
                 csv.writer(
                     handle,
-                    delimiter=delimiter or ("\t" if path.suffix == ".tsv" else ","),
+                    delimiter=delimiter
+                    or ("\t" if path.suffix.lower() == ".tsv" else ","),
                 ).writerow(schema.names)
         return path
