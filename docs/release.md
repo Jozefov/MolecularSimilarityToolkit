@@ -1,95 +1,120 @@
 # Private release review
 
-Version **0.1.0**, reviewed 2026-10-28. The repository remains private.
-Public visibility, hosted documentation and PyPI publication are separate
-owner-approved release steps.
+Version **0.2.0**, reviewed 2026-10-28. The repository remains private.
+The eight findings from the 0.1.0 review have regression coverage and are
+resolved in the reviewed implementation. See the [finding-by-finding closure
+report](review-fixes.md). No blocking scientific correctness defect was found
+in the follow-up review of the tested workflows. The limits below still apply.
+
+Public visibility, hosted documentation and PyPI publication remain separate
+owner-approved release steps. None was performed during this review.
 
 ## Verification
 
-- 49 automated tests cover independent exhaustive RDKit agreement, exact 0.8
-  boundaries, cross-shard ties, repeated IDs, identity exclusion, chemistry
-  policies, input formats, malformed plans, corrupt/missing receipts and
-  interruptions during staging, shard creation, search and reduction.
-- Python 3.11, 3.12 and 3.13 passed on Linux x86-64 and macOS arm64 in the
-  [six-job CI matrix](https://github.com/Jozefov/MolecularSimilarityToolkit/actions/runs/40752464603).
-- Ruff, the strict documentation build, source distribution and wheel build pass.
-  The wheel installs in a separate environment and runs the complete example.
-- Python and CLI quickstarts run in CI. The example retains both ethanol source
-  records, deduplicates seven input rows to six structures, and keeps four
-  structures when the two validation/test molecules are protected.
-- README artwork was rendered at 1,280-pixel desktop and 390-pixel mobile widths
-  in light and dark themes; no page-width overflow or missing images was found.
-  The infographic uses actual molecule drawings and calculated example scores.
+- **85 tests** pass locally, including independent exhaustive RDKit scores,
+  780 fingerprint candidate-completeness checks, exact cutoff decisions
+  immediately below/at/above 0.8 for both operators, stereo-aware nondefault
+  fingerprints, aliases, invalid protected inputs, process preparation,
+  task-local reads, compact indexes, pipeline incompatibility and interruptions.
+- The [six-job CI matrix](https://github.com/Jozefov/MolecularSimilarityToolkit/actions/runs/40767367300) passed the
+  suite, Python/CLI examples, integrity checks, strict documentation build,
+  wheel/source builds and clean-wheel example on Python 3.11–3.13 for Linux
+  x86-64 and macOS arm64. This is a private release workflow, not deployment.
+- Ruff, strict MkDocs generation and package builds pass. A separate wheel-only
+  environment ran the quickstart and process preparation from a plain Python
+  command without a multiprocessing main guard.
+- The generated package description renders with absolute links and PNG assets.
+  The GitHub README was inspected at desktop 1,280 px and mobile 390 px, in
+  light and dark themes. All responsive artwork loaded without page overflow.
+- Full verification passed for the 1M index, search and filter outputs.
+  A worst-case filter rejecting **all 1M real molecules** completed in
+  8.81 s with 1639 MiB parent peak RSS;
+  its output also passed full verification. Unchanged index resume took
+  0.97 s, including input/artifact checksums.
 
 ## Real-molecule measurements
 
-Input: the first 100K and first 1M rows of the user's local MSnGym pretraining
-pool snapshot `20260401_msngym_pretrain_pool_split.tsv`. These are **nonrandom
-subsets of that file**, not a whole-PubChem benchmark. Each subset contained the
-stated number of unique valid canonical structures and no invalid rows.
+These are **nonrandom first-row subsets of a local MSnGym pretraining pool**,
+snapshot `20260401_msngym_pretrain_pool_split.tsv`. They are not a whole-PubChem
+benchmark. Each subset had the stated number of valid unique structures.
+No input molecular collection is redistributed.
 
-Machine: macOS 26.5.1, arm64, 10 logical CPUs, 32 GiB RAM. Python 3.12.9,
-RDKit 2026.9.1, FPSim2 0.7.4. Four requested workers, 4 GiB configured budget,
-up to 1M molecules per shard. Each test used **10 query/protected molecules**,
-selected in stable-ID order, top-k 20, and a strict `> 0.8` cutoff. Queries can
-differ between subsets. The OS cache was uncontrolled; this was a development
-workstation, not an isolated performance host.
+Machine: macOS 26.5.1 arm64, 10 logical CPUs, 32 GiB RAM; Python 3.12.9,
+RDKit 2026.9.1, FPSim2 0.7.4. Default stereo-free Morgan radius 2 / 2,048 bits,
+strict `> 0.8` exclusion, top-k 20 and 4 GiB configured memory budget.
+The ten-query cases use ten protected molecules. The larger case uses
+**1,000 queries and 1,000 protected molecules over four 250K-molecule shards**.
 
-| Measurement | 100K molecules | 1M molecules |
-|---|---:|---:|
-| Index build | 22.64 s | 279.08 s |
-| Complete package search, 10 queries | 0.65 s | 1.56 s |
-| Complete package filter, 10 protected molecules | 0.82 s | 4.01 s |
-| Package search/filter peak RSS | 426 MiB | 1,697 MiB |
-| Build peak RSS | 496 MiB | 1,481 MiB |
-| Direct FPSim2 load | 0.065 s | 0.553 s |
-| Direct FPSim2 search kernel, 10 queries | 0.009 s | 0.044 s |
-| Direct FPSim2 filter kernel, 10 queries | 0.005 s | 0.020 s |
-| Historical NumPy scan and top-k, 10 queries | 0.84 s | 9.09 s |
-| Removed molecules | 22 | 24 |
+| Run | Maximum shard size | Build | Complete search | Complete filter | Build / search-filter peak tree RSS |
+|---|---:|---:|---:|---:|---:|
+| real-100k-1cpu | 1,000,000 | 20.02 s | 0.58 s | 0.63 s | 501 / 429 MiB |
+| real-100k-4cpu | 1,000,000 | 8.56 s | 0.54 s | 0.63 s | 628 / 430 MiB |
+| real-1m | 1,000,000 | 92.97 s | 1.49 s | 3.43 s | 1467 / 1712 MiB |
+| real-1m-1000queries | 250,000 | 88.67 s | 7.59 s | 5.35 s | 1486 / 1055 MiB |
 
-The package's extra time relative to direct FPSim2 is expected: query index
-preparation, input validation, boundary handling, exact rescoring, deterministic
-witnesses, checkpoint receipts, provenance joins and output writing are included.
-The filter writes almost the entire kept pool and its aliases. These are different
-services from a raw search kernel. Full package search was faster than the
-historical NumPy baseline in both runs. Exact scores and rejected counts agreed
-with NumPy; direct backend scores agreed within their float32 precision.
+On the 100K subset, four requested preparation workers used four child PIDs.
+Chemistry CPU time was 17.14 s over
+5.39 s of staging wall time, demonstrating
+actual parallel preparation. The one-worker staging time was
+16.72 s. Whole-build speedup in this pair was
+2.34×, not a promise of
+linear CPU scaling.
 
-Machine-readable reports include input subset checksums, resolved settings,
-versions, per-phase RSS and correctness flags:
-[100K report](benchmarks/real-100k.json), [1M report](benchmarks/real-1m.json).
-The input collections are not committed or redistributed.
+Every real-data correctness flag passed. The ten-query cases compared full
+query coverage, ranked molecule identities, integer intersection/union counts
+and rejection identities with both packed NumPy and direct FPSim2 plus RDKit
+rescoring. The 1,000-query case checked all 20,000 ranked matches and all 2,002
+rejected molecule IDs against the independent direct path; the slower NumPy
+baseline was explicitly omitted for that larger-query run.
 
-## Synthetic 10M-row stress test
+Direct FPSim2 kernel timings omit preparation, boundary expansion, exact
+rescoring, validation, checkpoints and output. Package timings include those
+services. NumPy's filter mask reuses search similarities. These fields measure
+different amounts of work and are labeled in the reports.
 
-Ten shards of one million **synthetic random fingerprints** each passed the
-adapter-versus-NumPy exact-score checks. Peak RSS was **1,203 MiB**. Total
-fingerprint-file build time was 355.48 seconds; loading/searching all ten shards
-for one query and rescoring candidates took 1.11 seconds. NumPy oracle scanning
-and random-data generation are outside those timing fields.
+## Synthetic 10M fingerprint stress test
 
-These are uniform random bytes, approximately 50% on-bits, not real compounds.
-The run validates bounded shard storage, the FPSim2 adapter and exact rescoring;
-it does not measure molecular normalization, aliases or the complete 10M-row
-package workflow. Local documentation generation and small checks overlapped
-this stress run, so it is not an isolated speed measurement.
-[Full synthetic report](benchmarks/synthetic-10m.json).
+Ten 1M-row shards of uniform random packed fingerprints passed the actual
+FPSim2 adapter versus a chunked NumPy score oracle. Fingerprint-file build time
+was 293.42 s; loading/searching all ten shards and
+rescoring candidates for one query took 0.87 s.
+Parent peak RSS was 1235 MiB.
 
-## Practical limits and release boundary
+These are **synthetic fingerprints, not real molecules**. The measurement
+excludes chemistry, provenance catalogs and complete 10M-row package scheduling.
+It supports bounded shard-resident search, not a full 10M-molecule workflow claim.
 
-The evidence covers up to 1M real molecules through the full workflow and 10M
-synthetic fingerprints through the search adapter. Whole-PubChem performance,
-large protected sets and network-filesystem behavior need their own measurements.
-No fixed runtime or linear CPU scaling is promised.
+## Interpretation and unresolved scope
 
-Standalone distributed build tasks validate the shared catalog independently,
-so each can incur a catalog checksum read. Local execution reuses validated
-context and resident shards safely. Avoid duplicate concurrent attempts of the
-same task. Memory settings are planning limits, not a hard OS sandbox.
+The cache was uncontrolled and freshly built files were likely cached. The
+measurements ran sequentially on a development workstation. Small local QA
+commands overlapped the synthetic run; this was not an isolated performance
+host. Process-tree RSS was sampled every 50 ms and includes preparation
+subprocesses. It may count shared pages more than once and miss short peaks.
+Parent OS high-water marks are retained separately. Memory budgets are planning
+limits, not hard OS enforcement.
 
-The repository includes the MIT license, citation metadata, contribution guide,
-locked development environment, editable SVGs and PNG exports. Only small
-hand-written molecule fixtures are bundled. The wheel and source archive are
-built while private; there is no PyPI upload, public documentation deployment,
-or visibility change in this release review.
+One preliminary direct-backend phase using four internal FPSim2 workers
+segfaulted; an identical diagnostic rerun passed. The root cause is unknown.
+The package uses serial native kernels with outer query concurrency. The final
+benchmark explicitly uses the same native mode, has a regression guarding it,
+and was rerun from fresh directories. The failed preliminary run is excluded
+from the table above; see [performance notes](performance.md).
+
+Whole-PubChem/ZINC throughput, real 10M+ molecule preparation, very large
+reference collections and production PBS/Slurm network filesystems require
+separate measurements. Local and CI cluster-task tests exercise the same work
+units, but do not establish a scheduler deployment benchmark. No fixed full-corpus
+runtime or linear CPU scaling is claimed.
+
+**Migration:** 0.1 indexes and runs must be rebuilt in new directories. Scientific
+pipeline versions prevent silent reuse. Portable compact indexes preserve
+provenance and runtime receipts without staging files; the original build remains
+available for repair.
+
+Machine-readable evidence (input/code hashes, versions, settings, timing, memory
+and complete correctness flags): [real-100k-1cpu](benchmarks/v020-real-100k-1cpu.json), [real-100k-4cpu](benchmarks/v020-real-100k-4cpu.json), [real-1m](benchmarks/v020-real-1m.json), [real-1m-1000queries](benchmarks/v020-real-1m-1000queries.json), [synthetic-10m](benchmarks/v020-synthetic-10m.json),
+[full verification, worst-case filtering and resume](benchmarks/v020-extra-checks.json).
+Reports from 0.1 remain historical artifacts; they are superseded by these 0.2
+measurements. Wheel and source artifacts are built while private. No PyPI upload,
+public documentation deployment or GitHub visibility change has occurred.

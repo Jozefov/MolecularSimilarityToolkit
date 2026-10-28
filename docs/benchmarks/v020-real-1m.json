@@ -1,0 +1,143 @@
+{
+  "dataset_label": "MSnGym local 20260401 pool first 1000000 rows",
+  "source_basename": "20260401_msngym_pretrain_pool_split.tsv",
+  "selection": "first 1000000 data rows; no random sampling",
+  "input_sha256": "92f5010ed43e7647a7dfb75fd7cd49153e1d88fecccfd942755673bca25a2d4b",
+  "input_rows": 1000000,
+  "hardware": {
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10
+  },
+  "python": "3.12.9 (main, Mar 17 2025, 21:36:21) [Clang 20.1.0 ]",
+  "dependency_versions": {
+    "FPSim2": "0.7.4",
+    "rdkit": "2026.9.1",
+    "numpy": "2.5.4",
+    "pyarrow": "26.0.0",
+    "duckdb": "2.0.0",
+    "molecular-similarity-toolkit": "0.2.0"
+  },
+  "workers": 4,
+  "direct_kernel_workers": 1,
+  "benchmark_sha256": "4e2d319ba66396860c98f45215322b0bc9c0f52db09f71f6a4bd7da07db4b89a",
+  "memory_gb": 4,
+  "cache_condition": "uncontrolled",
+  "cache_note": "OS page cache was not flushed. Build precedes search; comparisons run in the recorded order.",
+  "fingerprint": {
+    "type": "Morgan",
+    "radius": 2,
+    "n_bits": 2048,
+    "use_chirality": false
+  },
+  "chemistry": "stereo_free; charges, salts, tautomers and isotopes retained",
+  "queries": 10,
+  "k": 20,
+  "shard_size": 1000000,
+  "threshold": 0.8,
+  "comparison": ">",
+  "phase_order": [
+    "build",
+    "package",
+    "direct",
+    "numpy"
+  ],
+  "query_selection": "First unique molecules in stable-ID order; varies with subset size",
+  "source_checksums": {
+    "__init__.py": "6dd325b51a30e7ffec42e0c9b19fecf1c8185561778455532e28dd4784bd7c64",
+    "adapter.py": "232693265db4e488d5c541da87c6beaa3b0e2f4506b756d98a55be16575a036d",
+    "chemistry.py": "2550e68952716c8ecd3af3a12319e8b76ecc03c105248e98919e1a671a5b1576",
+    "cli.py": "7d6d6862add328f2f776c0b62b082299cd4ce156798a3ab3962b268bb2ba42ad",
+    "config.py": "c58fc38a313b0d292e2273e527619be2198b6823931186f2bd79e1609d630754",
+    "index.py": "fdab73a9ed2e66dce952962a91e4d1f75be1459acdcec054bd6f2a33c841cd26",
+    "inspection.py": "d8b9e9e00d3528a1ed153edb27eae32b9b88813b06721313ebc9b1b87d398ff5",
+    "operations.py": "74a184d041170067b00c5cc5a62db5020abd23dd9a86bbe1fa76c3fa0fc35ec4",
+    "readers.py": "2c9130351b49455bae752071933572adcde06d51139045026b497f63eed445e2",
+    "resources.py": "c1f228bf71b3c5123e86fd7c8a147af03094bd6a4fdf66a9b5c693ef4d5a8c2a",
+    "results.py": "20b824348e9546d7f35b056c83287ae489c00267fc9546f270214f92e2c7643a",
+    "storage.py": "dcc1474208798845860e963eeca39dbbddeaa121b489fbdd251b34454feb059e",
+    "versions.py": "cbb13ac9303c414cf66ad3c9ab23e249e6424638b453575223c29f8f6584ae24"
+  },
+  "code_revision": "d9ae1d6f8267f57393a91b66e2b730efca98f692",
+  "measurements": [
+    {
+      "index_build_seconds": 92.9709428329952,
+      "unique_molecules": 1000000,
+      "invalid_molecules": 0,
+      "preparation_cpu_seconds": 209.23442700000015,
+      "worker_pids": [
+        98692,
+        98695,
+        98696,
+        98697,
+        98698
+      ],
+      "process_workers": 4,
+      "preparation_wall_seconds": 58.74314591707662,
+      "peak_rss_mib": 1443.34375,
+      "phase": "build",
+      "peak_process_tree_rss_mib": 1467.484375,
+      "memory_note": "Process-tree RSS sampled every 50 ms; includes preparation subprocesses. peak_rss_mib is the parent OS high-water mark."
+    },
+    {
+      "search_seconds": 1.4857934578321874,
+      "filter_seconds": 3.434297707863152,
+      "search": {
+        "exclude_identity": false,
+        "invalid_query_count": 0,
+        "k": 20,
+        "kind": "search",
+        "match_count": 200,
+        "pool_count": 1000000,
+        "query_count": 10
+      },
+      "filter": {
+        "comparison": ">",
+        "eligible_count": 999976,
+        "invalid_count": 0,
+        "kind": "filter",
+        "pool_count": 1000000,
+        "protected_count": 10,
+        "protected_invalid_count": 0,
+        "rejected_count": 24,
+        "threshold": "0.8"
+      },
+      "rejected_count": 24,
+      "peak_rss_mib": 1711.5625,
+      "phase": "package",
+      "peak_process_tree_rss_mib": 1711.5625,
+      "memory_note": "Process-tree RSS sampled every 50 ms; includes preparation subprocesses. peak_rss_mib is the parent OS high-water mark."
+    },
+    {
+      "load_seconds": 0.7233568341471255,
+      "search_seconds": 0.09873541723936796,
+      "filter_seconds": 0.02819666499271989,
+      "rejected_count": 24,
+      "timing_note": "Serial native initial top-k/threshold kernels only (n_workers=1, matching package kernels); exact boundary expansion, identity/count verification and output are outside kernel timings.",
+      "peak_rss_mib": 1713.859375,
+      "phase": "direct",
+      "peak_process_tree_rss_mib": 1713.84375,
+      "memory_note": "Process-tree RSS sampled every 50 ms; includes preparation subprocesses. peak_rss_mib is the parent OS high-water mark."
+    },
+    {
+      "load_seconds": 0.2469640001654625,
+      "search_seconds": 6.992780998814851,
+      "filter_seconds": 0.012171708978712559,
+      "rejected_count": 24,
+      "timing_note": "Historical per-query NumPy byte-popcount scan; filter mask reuses computed similarities. Stable identity ties included in search time.",
+      "peak_rss_mib": 1930.078125,
+      "phase": "numpy",
+      "peak_process_tree_rss_mib": 1930.0625,
+      "memory_note": "Process-tree RSS sampled every 50 ms; includes preparation subprocesses. peak_rss_mib is the parent OS high-water mark."
+    }
+  ],
+  "checks": {
+    "package_query_coverage": true,
+    "direct_query_coverage": true,
+    "direct_matches_exact_identities": true,
+    "direct_rejected_exact_identities": true,
+    "numpy_query_coverage": true,
+    "numpy_matches_exact_identities": true,
+    "numpy_rejected_exact_identities": true
+  }
+}

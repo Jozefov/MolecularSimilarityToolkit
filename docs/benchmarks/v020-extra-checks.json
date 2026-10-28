@@ -1,0 +1,74 @@
+{
+  "index": {
+    "ok": true,
+    "failures": [],
+    "checked_receipts": 126,
+    "preparation_cpu_seconds": 209.23442700000015,
+    "preparation_wall_seconds": 58.74314591707662,
+    "process_workers": 4,
+    "selected_rows": 1000000,
+    "source_index": 0,
+    "staged_chunks": 123,
+    "state": "complete",
+    "worker_pids": [
+      98692,
+      98695,
+      98696,
+      98697,
+      98698
+    ],
+    "path": "benchmarks/runs/v020-reviewed-real-1m/index",
+    "kind": "build",
+    "completed_tasks": 1,
+    "total_tasks": 1
+  },
+  "search": {
+    "ok": true,
+    "failures": [],
+    "checked_receipts": 4,
+    "path": "benchmarks/runs/v020-reviewed-real-1m/search",
+    "kind": "search",
+    "state": "complete",
+    "completed_tasks": 1,
+    "total_tasks": 1
+  },
+  "filter": {
+    "ok": true,
+    "failures": [],
+    "checked_receipts": 3,
+    "path": "benchmarks/runs/v020-reviewed-real-1m/filter",
+    "kind": "filter",
+    "state": "complete",
+    "completed_tasks": 1,
+    "total_tasks": 1
+  },
+  "all_rejected": {
+    "seconds": 8.807310791220516,
+    "peak_rss_mib": 1639.25,
+    "summary": {
+      "comparison": ">=",
+      "eligible_count": 0,
+      "invalid_count": 0,
+      "kind": "filter",
+      "pool_count": 1000000,
+      "protected_count": 1,
+      "protected_invalid_count": 0,
+      "rejected_count": 1000000,
+      "threshold": "0"
+    },
+    "verification": {
+      "ok": true,
+      "failures": [],
+      "checked_receipts": 3,
+      "path": "work/v020-all-rejected",
+      "kind": "filter",
+      "state": "complete",
+      "completed_tasks": 1,
+      "total_tasks": 1
+    }
+  },
+  "resume": {
+    "seconds": 0.9727495419792831,
+    "size": 1000000
+  }
+}
